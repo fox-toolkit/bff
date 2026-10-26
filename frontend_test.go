@@ -1,0 +1,135 @@
+// Copyright 2026 Sylvain Müller. All rights reserved.
+// Use of this source code is governed by a MIT license that can be found
+// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.txt.
+
+package bff
+
+import (
+	"testing"
+	"time"
+
+	"github.com/fox-toolkit/bff/internal/oidctest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type nopAEAD struct{}
+
+func (nopAEAD) Encrypt(plaintext, _ []byte) ([]byte, error)  { return plaintext, nil }
+func (nopAEAD) Decrypt(ciphertext, _ []byte) ([]byte, error) { return ciphertext, nil }
+
+func newTestProvider(t *testing.T, metadata map[string]any) *Provider {
+	t.Helper()
+	srv := oidctest.NewServer(oidctest.Options{Metadata: metadata})
+	t.Cleanup(srv.Close)
+	p, err := NewProvider(t.Context(), srv.URL, WithHTTPClient(srv.Client()))
+	require.NoError(t, err)
+	return p
+}
+
+func TestNewProvider(t *testing.T) {
+	t.Run("discovery metadata", func(t *testing.T) {
+		p := newTestProvider(t, map[string]any{
+			"end_session_endpoint":                           "https://idp.example.com/logout",
+			"revocation_endpoint":                            "https://idp.example.com/revoke",
+			"prompt_values_supported":                        []string{"none", "login"},
+			"authorization_response_iss_parameter_supported": true,
+		})
+		assert.Equal(t, "https://idp.example.com/logout", p.endSessionEndpoint)
+		assert.Equal(t, "https://idp.example.com/revoke", p.revocationEndpoint)
+		assert.Equal(t, []string{"none", "login"}, p.promptValues)
+		assert.True(t, p.issParameter)
+	})
+
+	t.Run("issuer mismatch", func(t *testing.T) {
+		srv := oidctest.NewServer(oidctest.Options{Metadata: map[string]any{"issuer": "https://other.example.com"}})
+		defer srv.Close()
+		_, err := NewProvider(t.Context(), srv.URL, WithHTTPClient(srv.Client()))
+		assert.Error(t, err)
+	})
+
+	t.Run("invalid config", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			issuer string
+			opts   []ProviderOption
+		}{
+			{name: "http issuer", issuer: "http://idp.example.com"},
+			{name: "relative issuer", issuer: "/realms/acme"},
+			{name: "issuer with fragment", issuer: "https://idp.example.com#x"},
+			{name: "nil http client", issuer: "https://idp.example.com", opts: []ProviderOption{WithHTTPClient(nil)}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := NewProvider(t.Context(), tc.issuer, tc.opts...)
+				assert.ErrorIs(t, err, ErrInvalidConfig)
+			})
+		}
+	})
+}
+
+func TestNewFrontend(t *testing.T) {
+	p := newTestProvider(t, nil)
+	valid := func() Client {
+		return Client{
+			Provider:              p,
+			ClientID:              "app",
+			ClientSecret:          "secret",
+			RedirectURL:           "https://app.example.com/bff/callback",
+			PostLogoutRedirectURL: "https://app.example.com/",
+			Scopes:                []string{"openid", "profile"},
+		}
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		c := valid()
+		fe, err := NewFrontend(c, nopAEAD{}, WithIdleTimeout(time.Minute), WithCSRFHeader("x-csrf", "1"))
+		require.NoError(t, err)
+		c.Scopes[1] = "email"
+		assert.Equal(t, []string{"openid", "profile"}, fe.oauth2.Scopes)
+		assert.Equal(t, "X-Csrf", fe.cfg.csrfHeader)
+	})
+
+	t.Run("loopback http redirect", func(t *testing.T) {
+		c := valid()
+		c.RedirectURL = "http://localhost:8080/bff/callback"
+		_, err := NewFrontend(c, nopAEAD{})
+		assert.NoError(t, err)
+	})
+
+	cases := []struct {
+		name    string
+		client  func(c *Client)
+		opts    []Option
+		nilAEAD bool
+	}{
+		{name: "nil provider", client: func(c *Client) { c.Provider = nil }},
+		{name: "empty client id", client: func(c *Client) { c.ClientID = "" }},
+		{name: "empty client secret", client: func(c *Client) { c.ClientSecret = "" }},
+		{name: "http redirect url", client: func(c *Client) { c.RedirectURL = "http://app.example.com/bff/callback" }},
+		{name: "relative redirect url", client: func(c *Client) { c.RedirectURL = "/bff/callback" }},
+		{name: "invalid post logout url", client: func(c *Client) { c.PostLogoutRedirectURL = "/" }},
+		{name: "missing openid scope", client: func(c *Client) { c.Scopes = []string{"profile"} }},
+		{name: "empty scope", client: func(c *Client) { c.Scopes = []string{"openid", ""} }},
+		{name: "scope with space", client: func(c *Client) { c.Scopes = []string{"openid", "a b"} }},
+		{name: "nil aead", client: func(*Client) {}, nilAEAD: true},
+		{name: "idle timeout", client: func(*Client) {}, opts: []Option{WithIdleTimeout(0)}},
+		{name: "absolute timeout", client: func(*Client) {}, opts: []Option{WithAbsoluteTimeout(-time.Second)}},
+		{name: "idle exceeds absolute", client: func(*Client) {}, opts: []Option{WithIdleTimeout(2 * time.Hour), WithAbsoluteTimeout(time.Hour)}},
+		{name: "csrf header name", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x csrf", "1")}},
+		{name: "csrf header value", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x-csrf", "")}},
+		{name: "nil unauthorized handler", client: func(*Client) {}, opts: []Option{WithUnauthorizedHandler(nil)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := valid()
+			tc.client(&c)
+			var aead AEAD = nopAEAD{}
+			if tc.nilAEAD {
+				aead = nil
+			}
+			_, err := NewFrontend(c, aead, tc.opts...)
+			assert.ErrorIs(t, err, ErrInvalidConfig)
+		})
+	}
+}
