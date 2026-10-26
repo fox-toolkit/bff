@@ -257,3 +257,39 @@ func TestMiddlewareDPoPMismatch(t *testing.T) {
 		})
 	}
 }
+
+func TestTransportDPoPHostHeader(t *testing.T) {
+	api := newDPoPAPI(t)
+	target, err := url.Parse(api.URL)
+	require.NoError(t, err)
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithDPoP())
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = Transport(nil)
+	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Middleware()))
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api/orders", e.loggedIn(t), nil).Code)
+}
+
+func TestDPoPTransportSchemeCase(t *testing.T) {
+	key, _, err := newDPoPKey()
+	require.NoError(t, err)
+	var got string
+	var verifyErr error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		_, verifyErr = oidctest.VerifyDPoPProof(r, "access-token", "")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/userinfo", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "dpop access-token")
+	rt := &dpopTransport{base: http.DefaultTransport, key: key, nonces: newNonceCache(), now: time.Now}
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, "DPoP access-token", got)
+	assert.NoError(t, verifyErr)
+}

@@ -93,7 +93,7 @@ func (k *dpopKey) proof(r *http.Request, accessToken, nonce string, now time.Tim
 	claims := dpopClaims{
 		JTI:   randomString(),
 		HTM:   r.Method,
-		HTU:   r.URL.Scheme + "://" + r.URL.Host + path,
+		HTU:   targetOrigin(r) + path,
 		IAT:   now.Unix(),
 		Nonce: nonce,
 	}
@@ -149,7 +149,7 @@ func (c *nonceCache) set(origin, nonce string) {
 // sendDPoP sends r with a DPoP proof of the key, and with the access token when it is not empty. When the server
 // requires a new nonce, the request is sent again once with this nonce, if its body can be sent again.
 func sendDPoP(base http.RoundTripper, nonces *nonceCache, key *dpopKey, r *http.Request, accessToken string, now time.Time) (*http.Response, error) {
-	origin := r.URL.Scheme + "://" + r.URL.Host
+	origin := targetOrigin(r)
 	nonce := nonces.get(origin)
 	resp, err := sendProof(base, key, r, accessToken, nonce, now)
 	if err != nil {
@@ -180,6 +180,16 @@ func sendDPoP(base http.RoundTripper, nonces *nonceCache, key *dpopKey, r *http.
 		nonces.set(origin, n)
 	}
 	return resp, nil
+}
+
+// targetOrigin returns the scheme and authority of the target URI as the server sees it, with the Host header when it
+// is set (RFC 9110 7.1).
+func targetOrigin(r *http.Request) string {
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
+	}
+	return r.URL.Scheme + "://" + host
 }
 
 func replayable(r *http.Request) bool {
@@ -237,7 +247,8 @@ type dpopTransport struct {
 
 func (t *dpopTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	var accessToken string
-	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "DPoP "); ok {
+	// RFC 9110 11.1: the authentication scheme is case insensitive.
+	if scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "DPoP") {
 		accessToken = token
 	}
 	return sendDPoP(t.base, t.nonces, t.key, r, accessToken, t.now())
