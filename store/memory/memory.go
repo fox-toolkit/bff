@@ -40,8 +40,8 @@ func (s *Store) Load(_ context.Context, id string) (store.Record, error) {
 	return r, nil
 }
 
-// Save implements [store.Store].
-func (s *Store) Save(_ context.Context, id string, r store.Record) error {
+// Create implements [store.Store].
+func (s *Store) Create(_ context.Context, id string, r store.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -57,6 +57,17 @@ func (s *Store) Save(_ context.Context, id string, r store.Record) error {
 	return nil
 }
 
+// Update implements [store.Store].
+func (s *Store) Update(_ context.Context, id string, r store.Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prev, ok := s.records[id]; !ok || !s.now().Before(prev.Expires) {
+		return store.ErrNotFound
+	}
+	s.records[id] = r
+	return nil
+}
+
 // Delete implements [store.Store].
 func (s *Store) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
@@ -66,7 +77,7 @@ func (s *Store) Delete(_ context.Context, id string) error {
 }
 
 // DeleteBy implements [store.Store].
-func (s *Store) DeleteBy(_ context.Context, subject, sid string) (map[string]store.Record, error) {
+func (s *Store) DeleteBy(_ context.Context, partition, subject, sid string) (map[string]store.Record, error) {
 	if subject == "" && sid == "" {
 		return nil, nil
 	}
@@ -74,7 +85,7 @@ func (s *Store) DeleteBy(_ context.Context, subject, sid string) (map[string]sto
 	defer s.mu.Unlock()
 	deleted := make(map[string]store.Record)
 	for k, r := range s.records {
-		if (subject == "" || r.Subject == subject) && (sid == "" || r.SID == sid) {
+		if r.Partition == partition && (subject == "" || r.Subject == subject) && (sid == "" || r.SID == sid) {
 			deleted[k] = r
 			delete(s.records, k)
 		}

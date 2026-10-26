@@ -144,6 +144,11 @@ func TestEndToEnd(t *testing.T) {
 
 			code, logoutToken := user()
 			require.Equal(t, http.StatusOK, code)
+			appURL, err := url.Parse(app.URL)
+			require.NoError(t, err)
+			before, _, err := fe.readSession(t.Context(), jar.Cookies(appURL))
+			require.NoError(t, err)
+			fe.now = func() time.Time { return time.Now().Add(20 * time.Second) }
 
 			for range 3 {
 				require.Equal(t, http.StatusOK, get("/api/orders").StatusCode)
@@ -152,7 +157,8 @@ func TestEndToEnd(t *testing.T) {
 			for _, token := range tokens {
 				assert.True(t, strings.HasPrefix(token, "Bearer "))
 			}
-			assert.NotEqual(t, tokens[0], tokens[2])
+			assert.NotEqual(t, "Bearer "+before.AccessToken, tokens[0])
+			assert.Equal(t, tokens[0], tokens[2])
 
 			resp, err = browser.PostForm(app.URL+"/bff/logout", url.Values{"csrf_token": {logoutToken}})
 			require.NoError(t, err)

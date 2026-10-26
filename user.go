@@ -38,18 +38,15 @@ func (fe *Frontend) UserHandler() fox.HandlerFunc {
 		r := c.Request()
 		w := c.Writer()
 		w.Header().Set("Cache-Control", "no-store")
-		if !fe.checkCSRF(r) {
+		if err := fe.checkCSRF(r); err != nil {
+			fe.logRejected(r, "cross-site request", err)
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
 
 		s, err := fe.currentSession(r, w.Header())
 		if err != nil {
-			if errors.Is(err, errProvider) {
-				http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-			} else {
-				internalError(w)
-			}
+			fe.sessionError(w, r, err)
 			return
 		}
 		if s == nil {

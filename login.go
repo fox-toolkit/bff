@@ -5,9 +5,12 @@
 package bff
 
 import (
+	"cmp"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -19,7 +22,11 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const loginTimeout = 15 * time.Minute
+const (
+	loginTimeout = 15 * time.Minute
+	// maxPendingLogins bounds the login cookies of a browser, which abandoned or forced logins would pile up.
+	maxPendingLogins = 3
+)
 
 // standardPrompts are accepted when the provider does not advertise its prompt values.
 var standardPrompts = []string{"none", "login", "consent", "select_account"}
@@ -28,7 +35,8 @@ type loginState struct {
 	Verifier  string `json:"v"`
 	Nonce     string `json:"n"`
 	ReturnURL string `json:"r"`
-	Created   int64  `json:"t"`
+	// Created is in nanoseconds, so logins started in the same second are ordered.
+	Created int64 `json:"t"`
 }
 
 // LoginHandler returns a handler that starts the authorization code flow with the provider. The optional returnUrl
@@ -45,11 +53,13 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		if returnURL == "" {
 			returnURL = "/"
 		} else if !localURL(returnURL) {
+			fe.logRejected(r, "invalid return url", nil)
 			badRequest(w)
 			return
 		}
 		prompt := q.Get("prompt")
 		if prompt != "" && !fe.validPrompt(prompt) {
+			fe.logRejected(r, "invalid prompt", nil)
 			badRequest(w)
 			return
 		}
@@ -59,13 +69,15 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 			Verifier:  oauth2.GenerateVerifier(),
 			Nonce:     randomString(),
 			ReturnURL: returnURL,
-			Created:   fe.now().Unix(),
+			Created:   fe.now().UnixNano(),
 		}
+		fe.trimPendingLogins(w.Header(), r.Cookies())
 		data, err := json.Marshal(ls)
 		if err == nil {
 			err = loginCookie(state).write(w.Header(), fe.aead, data, int(loginTimeout.Seconds()), 0)
 		}
 		if err != nil {
+			fe.logFailed(r, "login cookie", err)
 			internalError(w)
 			return
 		}
@@ -75,6 +87,43 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 			opts = append(opts, oauth2.SetAuthURLParam("prompt", prompt))
 		}
 		http.Redirect(w, r, fe.oauth2.AuthCodeURL(state, opts...), http.StatusFound)
+	}
+}
+
+// trimPendingLogins deletes the login cookies of the oldest pending logins, keeping room for a new one.
+func (fe *Frontend) trimPendingLogins(h http.Header, cookies []*http.Cookie) {
+	type pending struct {
+		spec    cookieSpec
+		created int64
+		chunks  int
+	}
+	var logins []pending
+	seen := make(map[string]bool)
+	for _, c := range cookies {
+		name, ok := strings.CutPrefix(c.Name, loginCookie("").name)
+		if !ok {
+			continue
+		}
+		id, _, _ := strings.Cut(name, ".")
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		spec := loginCookie(id)
+		data, chunks, err := spec.read(cookies, fe.aead)
+		var ls loginState
+		if err != nil || json.Unmarshal(data, &ls) != nil {
+			spec.clear(h, max(chunks, 1))
+			continue
+		}
+		logins = append(logins, pending{spec: spec, created: ls.Created, chunks: chunks})
+	}
+	if len(logins) < maxPendingLogins {
+		return
+	}
+	slices.SortFunc(logins, func(a, b pending) int { return cmp.Compare(b.created, a.created) })
+	for _, l := range logins[maxPendingLogins-1:] {
+		l.spec.clear(h, l.chunks)
 	}
 }
 
@@ -91,6 +140,7 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 		q := r.URL.Query()
 		state := q.Get("state")
 		if state == "" {
+			fe.logRejected(r, "invalid callback", errors.New("no state"))
 			badRequest(w)
 			return
 		}
@@ -99,21 +149,25 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 		data, chunks, err := spec.read(cookies, fe.aead)
 		spec.clear(h, chunks)
 		if err != nil {
+			fe.logRejected(r, "invalid callback", fmt.Errorf("login cookie: %w", err))
 			badRequest(w)
 			return
 		}
 		var ls loginState
-		if err = json.Unmarshal(data, &ls); err != nil || fe.now().After(time.Unix(ls.Created, 0).Add(loginTimeout)) {
+		if err = json.Unmarshal(data, &ls); err != nil || fe.now().After(time.Unix(0, ls.Created).Add(loginTimeout)) {
+			fe.logRejected(r, "invalid callback", errors.New("login expired"))
 			badRequest(w)
 			return
 		}
 
 		// RFC 9207: the response must come from the provider the login was started with.
 		if iss := q.Get("iss"); (iss != "" || fe.provider.issParameter) && iss != fe.provider.issuer {
+			fe.logRejected(r, "invalid callback", fmt.Errorf("iss mismatch: %q", iss))
 			badRequest(w)
 			return
 		}
-		if q.Get("error") != "" {
+		if e := q.Get("error"); e != "" {
+			fe.logger.InfoContext(r.Context(), "provider returned an error", "path", r.URL.Path, "error", e)
 			http.Redirect(w, r, ls.ReturnURL, http.StatusFound)
 			return
 		}
@@ -121,19 +175,30 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 		s, err := fe.exchange(r, q.Get("code"), ls)
 		if err != nil {
 			if _, ok := errors.AsType[*oauth2.RetrieveError](err); ok || errors.Is(err, errInvalidLogin) {
+				fe.logRejected(r, "invalid callback", err)
 				badRequest(w)
 			} else {
+				fe.logFailed(r, "provider unavailable", err)
 				http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 			}
 			return
 		}
 
-		// Replace any previous session of the client.
+		// Replace any previous session of the client. The session cookie is usually not sent on the cross-site redirect
+		// from the provider, so the previous sessions of the same provider session are also found by their sid.
 		_, prev, err := fe.readSession(r.Context(), cookies)
 		if err == nil && prev.id != "" {
 			_ = fe.cfg.store.Delete(r.Context(), prev.id)
 		}
+		if fe.cfg.store != nil && s.SID != "" {
+			if err := fe.deleteSessionsBy(r.Context(), s.Subject, s.SID); err != nil {
+				fe.logFailed(r, "session store", err)
+				internalError(w)
+				return
+			}
+		}
 		if err := fe.writeSession(r.Context(), h, s, sessionState{chunks: prev.chunks}); err != nil {
+			fe.logFailed(r, "session store", err)
 			internalError(w)
 			return
 		}
@@ -151,32 +216,28 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	}
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok {
-		return nil, errInvalidLogin
+		return nil, fmt.Errorf("%w: no id token", errInvalidLogin)
 	}
-	idToken, err := fe.verifier.Verify(ctx, rawIDToken)
+	idToken, err := fe.verifyIDToken(ctx, rawIDToken)
 	if err != nil {
-		return nil, errInvalidLogin
+		return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
 	}
 	if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(ls.Nonce)) != 1 {
-		return nil, errInvalidLogin
+		return nil, fmt.Errorf("%w: nonce mismatch", errInvalidLogin)
 	}
 	var claims struct {
 		SID string `json:"sid"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
-		return nil, errInvalidLogin
+		return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
 	}
 
-	s := newSession(fe.now())
+	now := fe.now()
+	s := newSession(now)
 	s.Subject = idToken.Subject
 	s.SID = claims.SID
 	s.IDToken = rawIDToken
-	s.AccessToken = token.AccessToken
-	s.TokenType = token.TokenType
-	s.RefreshToken = token.RefreshToken
-	if !token.Expiry.IsZero() {
-		s.Expiry = token.Expiry.Unix()
-	}
+	s.setToken(token, now)
 
 	if fe.cfg.userInfo {
 		info, err := fe.provider.oidc.UserInfo(ctx, oauth2.StaticTokenSource(token))
@@ -185,13 +246,35 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 		}
 		// OpenID Connect Core 5.3.2: the sub of the UserInfo response must match the ID token.
 		if info.Subject != idToken.Subject {
-			return nil, errInvalidLogin
+			return nil, fmt.Errorf("%w: userinfo subject mismatch", errInvalidLogin)
 		}
 		if err := info.Claims(&s.UserInfo); err != nil {
-			return nil, errInvalidLogin
+			return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
 		}
 	}
 	return s, nil
+}
+
+// verifyIDToken verifies the ID token with go-oidc, then its azp claim as defined by OpenID Connect Core 3.1.3.7
+// steps 4 and 5, which go-oidc does not check.
+func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, error) {
+	idToken, err := fe.verifier.Verify(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	var claims struct {
+		AZP string `json:"azp"`
+	}
+	if err := idToken.Claims(&claims); err != nil {
+		return nil, err
+	}
+	if claims.AZP == "" && len(idToken.Audience) > 1 {
+		return nil, errors.New("azp required with several audiences")
+	}
+	if claims.AZP != "" && claims.AZP != fe.oauth2.ClientID {
+		return nil, errors.New("azp mismatch")
+	}
+	return idToken, nil
 }
 
 // validPrompt reports whether prompt is a space-separated list of values supported by the provider, none being

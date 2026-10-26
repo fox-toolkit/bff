@@ -17,6 +17,8 @@ var ErrNotFound = errors.New("session not found")
 type Record struct {
 	// Expires is the time after which the session is no longer valid.
 	Expires time.Time
+	// Partition identifies the frontend of the session.
+	Partition string
 	// Subject is the sub claim of the user.
 	Subject string
 	// SID is the sid claim of the provider session. It may be empty.
@@ -29,11 +31,15 @@ type Record struct {
 type Store interface {
 	// Load returns the record of the session, or [ErrNotFound] if it does not exist or has expired.
 	Load(ctx context.Context, id string) (Record, error)
-	// Save creates or replaces the record of the session.
-	Save(ctx context.Context, id string, r Record) error
+	// Create stores the record of a new session.
+	Create(ctx context.Context, id string, r Record) error
+	// Update replaces the record of an existing session, or returns [ErrNotFound] if it does not exist or has
+	// expired.
+	Update(ctx context.Context, id string, r Record) error
 	// Delete deletes the session. Deleting a session that does not exist is not an error.
 	Delete(ctx context.Context, id string) error
-	// DeleteBy deletes the sessions of the subject, restricted to the sid when it is not empty, and returns them by id.
-	// An empty subject matches any subject. DeleteBy deletes nothing when both are empty.
-	DeleteBy(ctx context.Context, subject, sid string) (map[string]Record, error)
+	// DeleteBy deletes the sessions of the partition that belong to the subject, restricted to the sid when it is not
+	// empty, and returns them by id. An empty subject matches any subject. DeleteBy deletes nothing when both are
+	// empty.
+	DeleteBy(ctx context.Context, partition, subject, sid string) (map[string]Record, error)
 }

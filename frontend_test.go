@@ -59,6 +59,14 @@ func TestNewProvider(t *testing.T) {
 			{name: "issuer with fragment", issuer: "https://idp.example.com#x"},
 			{name: "nil http client", issuer: "https://idp.example.com", opts: []ProviderOption{WithHTTPClient(nil)}},
 		}
+		for _, endpoint := range []string{"token_endpoint", "jwks_uri", "end_session_endpoint", "revocation_endpoint"} {
+			t.Run("http "+endpoint, func(t *testing.T) {
+				srv := oidctest.NewServer(oidctest.Options{Metadata: map[string]any{endpoint: "http://idp.example.com/x"}})
+				defer srv.Close()
+				_, err := NewProvider(t.Context(), srv.URL, WithHTTPClient(srv.Client()))
+				assert.ErrorIs(t, err, ErrInvalidConfig)
+			})
+		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				_, err := NewProvider(t.Context(), tc.issuer, tc.opts...)
@@ -119,6 +127,7 @@ func TestNewFrontend(t *testing.T) {
 		{name: "csrf header name", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x csrf", "1")}},
 		{name: "csrf header value", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x-csrf", "")}},
 		{name: "nil unauthorized handler", client: func(*Client) {}, opts: []Option{WithUnauthorizedHandler(nil)}},
+		{name: "nil log handler", client: func(*Client) {}, opts: []Option{WithLogHandler(nil)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

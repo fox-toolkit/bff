@@ -101,15 +101,7 @@ func (fe *Frontend) refresh(ctx context.Context, s *session) error {
 		return err
 	}
 
-	s.AccessToken = res.token.AccessToken
-	s.TokenType = res.token.TokenType
-	if res.token.RefreshToken != "" {
-		s.RefreshToken = res.token.RefreshToken
-	}
-	s.Expiry = 0
-	if !res.token.Expiry.IsZero() {
-		s.Expiry = res.token.Expiry.Unix()
-	}
+	s.setToken(res.token, res.at)
 	if res.idToken != "" {
 		s.IDToken = res.idToken
 	}
@@ -132,7 +124,7 @@ func (fe *Frontend) redeem(ctx context.Context, refreshToken, subject string) (r
 	rawIDToken, _ := token.Extra("id_token").(string)
 	if rawIDToken != "" {
 		// OpenID Connect Core 12.2: a refreshed ID token must be valid and keep the same subject.
-		idToken, err := fe.verifier.Verify(ctx, rawIDToken)
+		idToken, err := fe.verifyIDToken(ctx, rawIDToken)
 		if err != nil || idToken.Subject != subject {
 			return refreshResult{}, errSessionEnded
 		}

@@ -5,6 +5,8 @@
 package bff
 
 import (
+	"bytes"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -155,4 +157,19 @@ func FuzzVerifyLogoutToken(f *testing.F) {
 		_, _, err := e.fe.verifyLogoutToken(t.Context(), raw)
 		assert.Error(t, err)
 	})
+}
+
+func TestBackchannelLog(t *testing.T) {
+	var buf bytes.Buffer
+	ms := &mapStore{records: make(map[string]store.Record)}
+	e := newTestEnv(t, oidctest.Options{}, WithStore(ms), WithLogHandler(slog.NewTextHandler(&buf, nil)))
+	_, err := e.router.Add(fox.MethodPost, "/bff/backchannel", e.fe.BackchannelHandler())
+	require.NoError(t, err)
+
+	token := e.idp.Sign("logout+jwt", map[string]any{"iss": e.idp.URL, "aud": "app", "sid": "s1", "iat": time.Now().Unix(),
+		"jti": "id-1", "events": map[string]any{backchannelLogoutEvent: map[string]any{}}})
+	assert.Equal(t, http.StatusBadRequest, e.backchannel(token).Code)
+	assert.Contains(t, buf.String(), "level=WARN")
+	assert.Contains(t, buf.String(), `msg="invalid back-channel logout"`)
+	assert.Contains(t, buf.String(), "client_id=app")
 }

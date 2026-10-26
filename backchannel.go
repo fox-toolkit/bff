@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/fox-toolkit/fox"
@@ -36,28 +37,21 @@ func (fe *Frontend) BackchannelHandler() fox.HandlerFunc {
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxBackchannelBody)
 		if err := r.ParseForm(); err != nil {
+			fe.logRejected(r, "invalid back-channel logout", err)
 			badRequest(w)
 			return
 		}
 		subject, sid, err := fe.verifyLogoutToken(r.Context(), r.PostForm.Get("logout_token"))
 		if err != nil {
+			fe.logRejected(r, "invalid back-channel logout", err)
 			badRequest(w)
 			return
 		}
 
-		records, err := fe.cfg.store.DeleteBy(r.Context(), subject, sid)
-		if err != nil {
+		if err := fe.deleteSessionsBy(r.Context(), subject, sid); err != nil {
+			fe.logFailed(r, "session store", err)
 			internalError(w)
 			return
-		}
-		for id, rec := range records {
-			data, err := fe.aead.Decrypt(rec.Data, storeAssociatedData(id))
-			if err != nil {
-				continue
-			}
-			if s, err := decodeSession(data); err == nil && s.RefreshToken != "" {
-				_ = fe.revoke(r.Context(), s.RefreshToken)
-			}
 		}
 		w.WriteHeader(http.StatusOK)
 	}
@@ -67,12 +61,12 @@ func (fe *Frontend) BackchannelHandler() fox.HandlerFunc {
 // provider session ID, one of which may be empty.
 func (fe *Frontend) verifyLogoutToken(ctx context.Context, raw string) (string, string, error) {
 	if raw == "" {
-		return "", "", errInvalidLogoutToken
+		return "", "", fmt.Errorf("%w: missing", errInvalidLogoutToken)
 	}
 	// Steps 2 to 4: signature, algorithm, iss, aud and exp are validated as for an ID token.
 	token, err := fe.verifier.Verify(ctx, raw)
 	if err != nil {
-		return "", "", errInvalidLogoutToken
+		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
 	}
 	var claims struct {
 		Events map[string]json.RawMessage `json:"events"`
@@ -81,23 +75,23 @@ func (fe *Frontend) verifyLogoutToken(ctx context.Context, raw string) (string, 
 		Nonce  json.RawMessage            `json:"nonce"`
 	}
 	if err := token.Claims(&claims); err != nil {
-		return "", "", errInvalidLogoutToken
+		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
 	}
 	// Step 5: a sub claim, a sid claim, or both.
 	if token.Subject == "" && claims.SID == "" {
-		return "", "", errInvalidLogoutToken
+		return "", "", fmt.Errorf("%w: no sub nor sid", errInvalidLogoutToken)
 	}
 	// Step 6: the events claim contains the back-channel logout event, whose value is a JSON object.
 	if event, ok := claims.Events[backchannelLogoutEvent]; !ok || !bytes.HasPrefix(bytes.TrimSpace(event), []byte("{")) {
-		return "", "", errInvalidLogoutToken
+		return "", "", fmt.Errorf("%w: no back-channel logout event", errInvalidLogoutToken)
 	}
 	// Step 7: no nonce, so an ID token cannot be used as a logout token.
 	if claims.Nonce != nil {
-		return "", "", errInvalidLogoutToken
+		return "", "", fmt.Errorf("%w: nonce present", errInvalidLogoutToken)
 	}
 	// Section 2.4: iat and jti are required.
 	if token.IssuedAt.IsZero() || claims.JTI == "" {
-		return "", "", errInvalidLogoutToken
+		return "", "", fmt.Errorf("%w: missing iat or jti", errInvalidLogoutToken)
 	}
 	return token.Subject, claims.SID, nil
 }

@@ -7,6 +7,7 @@ package bff
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,7 +37,8 @@ func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 		case http.MethodGet:
 		case http.MethodPost:
 			// Forms cannot send a custom header, so only the cross-origin protection applies.
-			if fe.cop.Check(r) != nil {
+			if err := fe.cop.Check(r); err != nil {
+				fe.logRejected(r, "cross-site request", err)
 				http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 				return
 			}
@@ -47,9 +49,14 @@ func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 		}
 
 		s, st, err := fe.readSession(r.Context(), r.Cookies())
-		if err != nil {
+		if errors.Is(err, errNoSession) {
 			sessionCookie.clear(w.Header(), st.chunks)
 			http.Redirect(w, r, fe.postLogoutURL(), http.StatusSeeOther)
+			return
+		}
+		if err != nil {
+			fe.logFailed(r, "session store", err)
+			internalError(w)
 			return
 		}
 
@@ -64,11 +71,13 @@ func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 			}
 		}
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.LogoutCSRFToken)) != 1 {
+			fe.logRejected(r, "invalid logout", errors.New("missing or invalid csrf token"))
 			badRequest(w)
 			return
 		}
 
 		if err := fe.deleteSession(r.Context(), w.Header(), st); err != nil {
+			fe.logFailed(r, "session store", err)
 			internalError(w)
 			return
 		}
@@ -110,6 +119,14 @@ func (fe *Frontend) postLogoutURL() string {
 // revoke revokes the refresh token, as defined by RFC 7009. It does nothing when the provider has no revocation
 // endpoint.
 func (fe *Frontend) revoke(ctx context.Context, refreshToken string) error {
+	err := fe.postRevocation(ctx, refreshToken)
+	if err != nil {
+		fe.logger.WarnContext(ctx, "refresh token revocation failed", "error", err)
+	}
+	return err
+}
+
+func (fe *Frontend) postRevocation(ctx context.Context, refreshToken string) error {
 	if fe.provider.revocationEndpoint == "" {
 		return nil
 	}

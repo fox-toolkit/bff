@@ -48,6 +48,7 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 	}
 
 	var metadata struct {
+		JWKSURI            string   `json:"jwks_uri"`
 		EndSessionEndpoint string   `json:"end_session_endpoint"`
 		RevocationEndpoint string   `json:"revocation_endpoint"`
 		PromptValues       []string `json:"prompt_values_supported"`
@@ -55,6 +56,17 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 	}
 	if err := p.Claims(&metadata); err != nil {
 		return nil, err
+	}
+	endpoints := []string{p.Endpoint().AuthURL, p.Endpoint().TokenURL, metadata.JWKSURI}
+	for _, endpoint := range []string{p.UserInfoEndpoint(), metadata.EndSessionEndpoint, metadata.RevocationEndpoint} {
+		if endpoint != "" {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	for _, endpoint := range endpoints {
+		if err := checkURL(endpoint); err != nil {
+			return nil, fmt.Errorf("%w: provider endpoint %q %w", ErrInvalidConfig, endpoint, err)
+		}
 	}
 
 	return &Provider{

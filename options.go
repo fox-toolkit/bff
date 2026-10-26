@@ -7,6 +7,7 @@ package bff
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -36,6 +37,7 @@ func (f optionFunc) apply(c *config) error {
 }
 
 type config struct {
+	logHandler      slog.Handler
 	store           store.Store
 	unauthorized    fox.HandlerFunc
 	csrfHeader      string
@@ -47,6 +49,7 @@ type config struct {
 
 func defaultConfig() *config {
 	return &config{
+		logHandler:      slog.DiscardHandler,
 		unauthorized:    DefaultUnauthorized,
 		idleTimeout:     DefaultIdleTimeout,
 		absoluteTimeout: DefaultAbsoluteTimeout,
@@ -61,6 +64,18 @@ func WithStore(s store.Store) Option {
 			return fmt.Errorf("%w: nil store", ErrInvalidConfig)
 		}
 		c.store = s
+		return nil
+	})
+}
+
+// WithLogHandler sets the handler of the logs written when a request is rejected or fails. By default, nothing is
+// logged.
+func WithLogHandler(h slog.Handler) Option {
+	return optionFunc(func(c *config) error {
+		if h == nil {
+			return fmt.Errorf("%w: nil log handler", ErrInvalidConfig)
+		}
+		c.logHandler = h
 		return nil
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -24,7 +25,9 @@ var (
 	errInvalidCookie = errors.New("invalid cookie")
 )
 
-// cookieSpec is an encrypted cookie, split into chunks named name.0, name.1 and so on when its value is too long.
+// cookieSpec is an encrypted cookie, split into chunks named name.0, name.1 and so on when its value is too long. The
+// value of the first chunk starts with the number of chunks and a dot, so chunks left by a previous longer value are
+// ignored.
 type cookieSpec struct {
 	name     string
 	purpose  string
@@ -52,12 +55,15 @@ func (s cookieSpec) write(h http.Header, aead AEAD, plaintext []byte, maxAge, pr
 		return err
 	}
 	value := base64.RawURLEncoding.EncodeToString(ciphertext)
-	n := 0
-	for len(value) > 0 {
-		chunk := value[:min(len(value), maxChunkSize)]
-		value = value[len(chunk):]
-		h.Add("Set-Cookie", s.cookie(n, chunk, maxAge))
-		n++
+	// Each chunk leaves room for the count prefix of the first one.
+	size := maxChunkSize - 8
+	n := (len(value) + size - 1) / size
+	for i := range n {
+		chunk := value[i*size : min(len(value), (i+1)*size)]
+		if i == 0 {
+			chunk = strconv.Itoa(n) + "." + chunk
+		}
+		h.Add("Set-Cookie", s.cookie(i, chunk, maxAge))
 	}
 	for i := n; i < prev; i++ {
 		h.Add("Set-Cookie", s.cookie(i, "", -1))
@@ -71,46 +77,50 @@ func (s cookieSpec) clear(h http.Header, prev int) {
 	}
 }
 
-// read reassembles and opens the chunks among cookies. It also returns the number of chunks found, so they can be
-// deleted when the cookie is invalid.
+// read reassembles and opens the chunks among cookies. It also returns the number of chunk slots found, so they can
+// be deleted when the cookie is invalid or shorter.
 func (s cookieSpec) read(cookies []*http.Cookie, aead AEAD) ([]byte, int, error) {
 	var chunks []string
-	found := 0
 	prefix := s.name + "."
 	for _, c := range cookies {
 		suffix, ok := strings.CutPrefix(c.Name, prefix)
 		if !ok {
 			continue
 		}
-		found++
 		i, ok := chunkIndex(suffix)
 		if !ok || i >= len(cookies) {
-			return nil, found, errInvalidCookie
+			return nil, len(chunks), errInvalidCookie
 		}
 		if i >= len(chunks) {
 			chunks = append(chunks, make([]string, i+1-len(chunks))...)
 		}
 		if chunks[i] != "" || c.Value == "" {
-			return nil, found, errInvalidCookie
+			return nil, len(chunks), errInvalidCookie
 		}
 		chunks[i] = c.Value
 	}
-	if found == 0 {
+	if len(chunks) == 0 {
 		return nil, 0, errNoCookie
 	}
-	if found != len(chunks) {
-		return nil, found, errInvalidCookie
-	}
 
-	ciphertext, err := base64.RawURLEncoding.DecodeString(strings.Join(chunks, ""))
+	count, first, ok := strings.Cut(chunks[0], ".")
+	n, valid := chunkIndex(count)
+	if !ok || !valid || n == 0 || n > len(chunks) {
+		return nil, len(chunks), errInvalidCookie
+	}
+	parts := append([]string{first}, chunks[1:n]...)
+	if slices.Contains(parts, "") {
+		return nil, len(chunks), errInvalidCookie
+	}
+	ciphertext, err := base64.RawURLEncoding.DecodeString(strings.Join(parts, ""))
 	if err != nil {
-		return nil, found, errInvalidCookie
+		return nil, len(chunks), errInvalidCookie
 	}
 	plaintext, err := aead.Decrypt(ciphertext, s.associatedData())
 	if err != nil {
-		return nil, found, errInvalidCookie
+		return nil, len(chunks), errInvalidCookie
 	}
-	return plaintext, found, nil
+	return plaintext, len(chunks), nil
 }
 
 func (s cookieSpec) cookie(i int, value string, maxAge int) string {

@@ -5,10 +5,12 @@
 package bff
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -35,7 +37,7 @@ type requestState struct {
 }
 
 // Middleware returns a middleware that authenticates the requests with the session cookie. It rejects cross-origin
-// requests, refreshes the access token before it expires, and makes it available with [Token]. Requests without a
+// requests, refreshes the access token before it expires, and makes it available with [AccessToken]. Requests without a
 // valid session are handled by the unauthorized handler, unless the route has [AllowAnonymous]. The session cookies are
 // removed from the request passed to the next handler and from its response.
 func (fe *Frontend) Middleware() fox.MiddlewareFunc {
@@ -48,7 +50,8 @@ func (fe *Frontend) Middleware() fox.MiddlewareFunc {
 
 func (fe *Frontend) serve(c *fox.Context, next fox.HandlerFunc) {
 	r := c.Request()
-	if !fe.checkCSRF(r) {
+	if err := fe.checkCSRF(r); err != nil {
+		fe.logRejected(r, "cross-site request", err)
 		http.Error(c.Writer(), http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
 	}
@@ -56,11 +59,7 @@ func (fe *Frontend) serve(c *fox.Context, next fox.HandlerFunc) {
 	pending := make(http.Header)
 	s, err := fe.currentSession(r, pending)
 	if err != nil {
-		if errors.Is(err, errProvider) {
-			http.Error(c.Writer(), http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-		} else {
-			internalError(c.Writer())
-		}
+		fe.sessionError(c.Writer(), r, err)
 		return
 	}
 	if s == nil {
@@ -85,8 +84,27 @@ func (fe *Frontend) serve(c *fox.Context, next fox.HandlerFunc) {
 	c.SetRequest(r)
 }
 
-func (fe *Frontend) checkCSRF(r *http.Request) bool {
-	return fe.cop.Check(r) == nil && (fe.cfg.csrfHeader == "" || r.Header.Get(fe.cfg.csrfHeader) == fe.cfg.csrfValue)
+var errCSRFHeader = errors.New("missing or invalid csrf header")
+
+func (fe *Frontend) checkCSRF(r *http.Request) error {
+	if err := fe.cop.Check(r); err != nil {
+		return err
+	}
+	if fe.cfg.csrfHeader != "" && r.Header.Get(fe.cfg.csrfHeader) != fe.cfg.csrfValue {
+		return errCSRFHeader
+	}
+	return nil
+}
+
+// sessionError responds to a failure to load or save the session.
+func (fe *Frontend) sessionError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errProvider) {
+		fe.logFailed(r, "provider unavailable", err)
+		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+		return
+	}
+	fe.logFailed(r, "session store", err)
+	internalError(w)
 }
 
 // currentSession returns the valid session of the request, or nil. The cookies to set on the response are added to h.
@@ -94,6 +112,9 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, er
 	ctx := r.Context()
 	s, st, err := fe.readSession(ctx, r.Cookies())
 	if errors.Is(err, errNoSession) {
+		if st.chunks > 0 {
+			fe.logger.InfoContext(ctx, "invalid or ended session", "path", r.URL.Path)
+		}
 		sessionCookie.clear(h, st.chunks)
 		return nil, nil
 	}
@@ -113,12 +134,14 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, er
 		dirty = true
 	}
 
-	if s.Expiry != 0 && !now.Add(refreshSkew).Before(time.Unix(s.Expiry, 0)) {
+	refreshed := false
+	if s.Expiry != 0 && !now.Add(s.refreshSkew()).Before(time.Unix(s.Expiry, 0)) {
 		expired := !now.Before(time.Unix(s.Expiry, 0))
 		switch err := fe.refreshToken(ctx, s); {
 		case err == nil:
-			dirty = true
+			dirty, refreshed = true, true
 		case errors.Is(err, errSessionEnded) || expired && s.RefreshToken == "":
+			fe.logger.InfoContext(ctx, "session ended", "path", r.URL.Path, "error", err)
 			return nil, fe.deleteSession(ctx, h, st)
 		case expired:
 			return nil, fmt.Errorf("%w: %w", errProvider, err)
@@ -126,7 +149,17 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, er
 	}
 
 	if dirty {
-		if err := fe.writeSession(ctx, h, s, st); err != nil {
+		err := fe.writeSession(ctx, h, s, st)
+		if errors.Is(err, errNoSession) {
+			// The session was ended by another request, such as a back-channel logout, while this one was running.
+			fe.logger.InfoContext(ctx, "session ended during the request", "path", r.URL.Path)
+			sessionCookie.clear(h, st.chunks)
+			if refreshed {
+				_ = fe.revoke(ctx, s.RefreshToken)
+			}
+			return nil, nil
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -192,8 +225,15 @@ func (w *cookieWriter) commit() {
 }
 
 func (w *cookieWriter) removeOwnCookies() {
-	h := w.Header()
+	removeOwnSetCookies(w.Header())
+}
+
+// removeOwnSetCookies removes the Set-Cookie lines of the BFF cookies from h.
+func removeOwnSetCookies(h http.Header) {
 	lines := h["Set-Cookie"]
+	if len(lines) == 0 {
+		return
+	}
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
 		name, _, _ := strings.Cut(line, "=")
@@ -235,4 +275,10 @@ func (w *cookieWriter) ReadFrom(src io.Reader) (int64, error) {
 func (w *cookieWriter) FlushError() error {
 	w.commit()
 	return w.ResponseWriter.FlushError()
+}
+
+// Hijack commits the cookies first, since the reverse proxy writes the header of a protocol upgrade itself.
+func (w *cookieWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.commit()
+	return w.ResponseWriter.Hijack()
 }

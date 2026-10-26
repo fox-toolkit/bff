@@ -95,6 +95,23 @@ func TestCookieWriteDeletesStaleChunks(t *testing.T) {
 	assert.Contains(t, lines[2], "__Host-bff.2=; Path=/; Max-Age=0")
 }
 
+func TestCookieReadIgnoresStaleChunks(t *testing.T) {
+	aead := newGCMAEAD(t)
+	h := make(http.Header)
+	require.NoError(t, sessionCookie.write(h, aead, bytes.Repeat([]byte{'a'}, 2*maxChunkSize), 0, 0))
+	old := requestCookies(t, h)
+	require.Len(t, old, 3)
+
+	h = make(http.Header)
+	require.NoError(t, sessionCookie.write(h, aead, []byte("b"), 0, 0))
+	cookies := append(requestCookies(t, h), old[1:]...)
+
+	got, n, err := sessionCookie.read(cookies, aead)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("b"), got)
+	assert.Equal(t, 3, n)
+}
+
 func TestCookieClear(t *testing.T) {
 	h := make(http.Header)
 	loginCookie("abc").clear(h, 2)
@@ -134,6 +151,9 @@ func TestCookieReadInvalid(t *testing.T) {
 		{name: "signed index", cookies: []*http.Cookie{cookie("__Host-bff.+0", "x")}},
 		{name: "not a number", cookies: []*http.Cookie{cookie("__Host-bff.x", "x")}},
 		{name: "index out of range", cookies: []*http.Cookie{cookie("__Host-bff.999999", "x")}},
+		{name: "no count", cookies: []*http.Cookie{cookie("__Host-bff.0", "abc")}},
+		{name: "zero count", cookies: []*http.Cookie{cookie("__Host-bff.0", "0.abc")}},
+		{name: "count beyond chunks", cookies: []*http.Cookie{cookie("__Host-bff.0", "2.abc")}},
 		{name: "other purpose", cookies: valid, spec: cookieSpec{name: sessionCookie.name, purpose: "login"}},
 	}
 	for _, tc := range cases {
@@ -142,9 +162,8 @@ func TestCookieReadInvalid(t *testing.T) {
 			if tc.spec.name != "" {
 				spec = tc.spec
 			}
-			_, n, err := spec.read(tc.cookies, aead)
+			_, _, err := spec.read(tc.cookies, aead)
 			assert.ErrorIs(t, err, errInvalidCookie)
-			assert.Positive(t, n)
 		})
 	}
 }

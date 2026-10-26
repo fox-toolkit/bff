@@ -5,6 +5,7 @@
 package bff
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -61,6 +62,10 @@ func (e *testEnv) loggedIn(t testing.TB) []*http.Cookie {
 	rec := e.login(t, "", nil)
 	require.Equal(t, http.StatusFound, rec.Code)
 	return requestCookies(t, rec.Header())
+}
+
+func (e *testEnv) skipAhead(d time.Duration) {
+	e.fe.now = func() time.Time { return time.Now().Add(d) }
 }
 
 func sessionCookieLines(h http.Header) []string {
@@ -170,6 +175,7 @@ func TestMiddlewareRefresh(t *testing.T) {
 		e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second}, opts...)
 		got := e.mount(t, "/api")
 		cookies := e.loggedIn(t)
+		e.skipAhead(20 * time.Second)
 		before, _, err := e.fe.readSession(t.Context(), cookies)
 		require.NoError(t, err)
 
@@ -196,6 +202,7 @@ func TestMiddlewareRefreshRotation(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, RotateRefreshTokens: true})
 	got := e.mount(t, "/api")
 	cookies := e.loggedIn(t)
+	e.skipAhead(20 * time.Second)
 
 	var wg sync.WaitGroup
 	codes := make([]int, 10)
@@ -219,6 +226,7 @@ func TestMiddlewareRefreshRejected(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second})
 	e.mount(t, "/api")
 	cookies := e.loggedIn(t)
+	e.skipAhead(20 * time.Second)
 	s, _, err := e.fe.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
@@ -239,6 +247,7 @@ func TestMiddlewareProviderDown(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second})
 	e.mount(t, "/api")
 	cookies := e.loggedIn(t)
+	e.skipAhead(20 * time.Second)
 	e.idp.Close()
 
 	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
@@ -256,7 +265,9 @@ func TestMiddlewareResponseCookies(t *testing.T) {
 	}, fox.WithMiddleware(e.fe.Middleware()))
 	require.NoError(t, err)
 
-	rec := e.do(http.MethodGet, "/api", e.loggedIn(t), nil)
+	cookies := e.loggedIn(t)
+	e.skipAhead(20 * time.Second)
+	rec := e.do(http.MethodGet, "/api", cookies, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	lines := rec.Header().Values("Set-Cookie")
 	require.Len(t, lines, 2)
@@ -273,4 +284,33 @@ func TestRemoveOwnCookies(t *testing.T) {
 	h = http.Header{"Cookie": {"__Host-bff.0=x"}}
 	removeOwnCookies(h)
 	assert.NotContains(t, h, "Cookie")
+}
+
+type deletingStore struct {
+	*mapStore
+	deleteOnLoad bool
+}
+
+func (s *deletingStore) Load(ctx context.Context, id string) (store.Record, error) {
+	r, err := s.mapStore.Load(ctx, id)
+	if err == nil && s.deleteOnLoad {
+		delete(s.records, id)
+	}
+	return r, err
+}
+
+func TestMiddlewareSessionEndedDuringRequest(t *testing.T) {
+	ds := &deletingStore{mapStore: &mapStore{records: make(map[string]store.Record)}}
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second}, WithStore(ds))
+	got := e.mount(t, "/api")
+	cookies := e.loggedIn(t)
+	e.skipAhead(20 * time.Second)
+
+	ds.deleteOnLoad = true
+	rec := e.do(http.MethodGet, "/api", cookies, nil)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Len(t, sessionCookieLines(rec.Header()), 1)
+	assert.Empty(t, ds.records)
+	assert.Empty(t, *got)
+	assert.Len(t, e.idp.Revoked(), 1)
 }

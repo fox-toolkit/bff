@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fox-toolkit/bff/internal/oidctest"
 	"github.com/fox-toolkit/bff/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -67,7 +68,15 @@ func (s *mapStore) Load(_ context.Context, id string) (store.Record, error) {
 	return r, nil
 }
 
-func (s *mapStore) Save(_ context.Context, id string, r store.Record) error {
+func (s *mapStore) Create(_ context.Context, id string, r store.Record) error {
+	s.records[id] = r
+	return nil
+}
+
+func (s *mapStore) Update(_ context.Context, id string, r store.Record) error {
+	if _, ok := s.records[id]; !ok {
+		return store.ErrNotFound
+	}
 	s.records[id] = r
 	return nil
 }
@@ -77,10 +86,10 @@ func (s *mapStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (s *mapStore) DeleteBy(_ context.Context, subject, sid string) (map[string]store.Record, error) {
+func (s *mapStore) DeleteBy(_ context.Context, partition, subject, sid string) (map[string]store.Record, error) {
 	deleted := make(map[string]store.Record)
 	for k, r := range s.records {
-		if (subject == "" || r.Subject == subject) && (sid == "" || r.SID == sid) {
+		if r.Partition == partition && (subject == "" || r.Subject == subject) && (sid == "" || r.SID == sid) {
 			deleted[k] = r
 			delete(s.records, k)
 		}
@@ -136,7 +145,7 @@ func TestSessionStateful(t *testing.T) {
 		require.NoError(t, fe.writeSession(ctx, h, testSession(), sessionState{}))
 		_, other, err := fe.readSession(ctx, requestCookies(t, h))
 		require.NoError(t, err)
-		require.NoError(t, ms.Save(ctx, other.id, r))
+		require.NoError(t, ms.Update(ctx, other.id, r))
 		_, _, err = fe.readSession(ctx, requestCookies(t, h))
 		assert.ErrorIs(t, err, errNoSession)
 	})
@@ -181,4 +190,34 @@ func FuzzDecodeSession(f *testing.F) {
 			assert.Equal(t, sessionVersion, s.Version)
 		}
 	})
+}
+
+func TestSessionRefreshSkew(t *testing.T) {
+	for lifetime, want := range map[int64]time.Duration{
+		0:    refreshSkew,
+		3600: refreshSkew,
+		60:   30 * time.Second,
+		10:   5 * time.Second,
+	} {
+		s := &session{Lifetime: lifetime}
+		assert.Equal(t, want, s.refreshSkew())
+	}
+}
+
+func TestSessionBoundToFrontend(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{})
+	cookies := e.loggedIn(t)
+	admin, err := NewFrontend(Client{
+		Provider:     e.fe.provider,
+		ClientID:     "admin",
+		ClientSecret: oidctest.ClientSecret,
+		RedirectURL:  appOrigin + "/bff/callback",
+		Scopes:       []string{"openid"},
+	}, newGCMAEAD(t))
+	require.NoError(t, err)
+
+	_, _, err = e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+	_, _, err = admin.readSession(t.Context(), cookies)
+	assert.ErrorIs(t, err, errNoSession)
 }

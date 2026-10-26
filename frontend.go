@@ -5,7 +5,10 @@
 package bff
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"time"
@@ -24,7 +27,10 @@ type Frontend struct {
 	now                   func() time.Time
 	cop                   *http.CrossOriginProtection
 	refreshGroup          *refreshGroup
+	logger                *slog.Logger
 	postLogoutRedirectURL string
+	// partition identifies the frontend, by its issuer and client ID.
+	partition string
 }
 
 // NewFrontend returns a [Frontend] for the OpenID Connect client.
@@ -50,9 +56,11 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 	}
 
 	p := client.Provider
+	sum := sha256.Sum256([]byte(p.issuer + "\x00" + client.ClientID))
+	partition := base64.RawURLEncoding.EncodeToString(sum[:])
 	fe := &Frontend{
 		cfg:      cfg,
-		aead:     aead,
+		aead:     scopedAEAD{AEAD: aead, scope: partition},
 		provider: p,
 		verifier: p.oidc.VerifierContext(p.ctx, &oidc.Config{ClientID: client.ClientID}),
 		oauth2: oauth2.Config{
@@ -65,7 +73,19 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		postLogoutRedirectURL: client.PostLogoutRedirectURL,
 		now:                   time.Now,
 		cop:                   http.NewCrossOriginProtection(),
+		logger:                slog.New(cfg.logHandler).With("client_id", client.ClientID),
+		partition:             partition,
 	}
 	fe.refreshGroup = newRefreshGroup(func() time.Time { return fe.now() })
 	return fe, nil
+}
+
+// logRejected logs a request rejected because it is invalid.
+func (fe *Frontend) logRejected(r *http.Request, msg string, err error) {
+	fe.logger.WarnContext(r.Context(), msg, "path", r.URL.Path, "error", err)
+}
+
+// logFailed logs a request that failed because of the store or the provider.
+func (fe *Frontend) logFailed(r *http.Request, msg string, err error) {
+	fe.logger.ErrorContext(r.Context(), msg, "path", r.URL.Path, "error", err)
 }

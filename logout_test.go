@@ -5,6 +5,8 @@
 package bff
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/fox-toolkit/bff/internal/oidctest"
 	"github.com/fox-toolkit/bff/store"
+	"github.com/fox-toolkit/bff/store/memory"
 	"github.com/fox-toolkit/fox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,4 +144,31 @@ func TestLogoutWithoutProviderEndpoints(t *testing.T) {
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	assert.Equal(t, appOrigin+"/", rec.Header().Get("Location"))
 	assert.Empty(t, e.idp.Revoked())
+}
+
+type failingStore struct {
+	store.Store
+	fail bool
+}
+
+func (s *failingStore) Load(ctx context.Context, id string) (store.Record, error) {
+	if s.fail {
+		return store.Record{}, errors.New("store down")
+	}
+	return s.Store.Load(ctx, id)
+}
+
+func TestLogoutStoreError(t *testing.T) {
+	fs := &failingStore{Store: memory.NewStore()}
+	e := newTestEnv(t, oidctest.Options{}, WithStore(fs))
+	e.mountLogout(t)
+	cookies := e.loggedIn(t)
+	s, _, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+
+	fs.fail = true
+	rec := e.do(http.MethodGet, "/bff/logout?csrf_token="+s.LogoutCSRFToken, cookies, nil)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Empty(t, rec.Header().Values("Set-Cookie"))
+	assert.Empty(t, e.idp.EndSessions())
 }

@@ -225,6 +225,8 @@ func TestCallbackInvalid(t *testing.T) {
 		{name: "nonce mismatch", opts: oidctest.Options{Claims: map[string]any{"nonce": "other"}}},
 		{name: "audience mismatch", opts: oidctest.Options{Claims: map[string]any{"aud": "other"}}},
 		{name: "expired id token", opts: oidctest.Options{Claims: map[string]any{"exp": time.Now().Add(-time.Hour).Unix()}}},
+		{name: "azp mismatch", opts: oidctest.Options{Claims: map[string]any{"azp": "other"}}},
+		{name: "several audiences without azp", opts: oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -284,4 +286,109 @@ func FuzzLocalURL(f *testing.F) {
 		assert.Equal(t, "app.example.com", resolved.Host)
 		assert.False(t, strings.ContainsAny(u, "\\\t\r\n"))
 	})
+}
+
+func TestCallbackReloginWithStaleChunks(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{Claims: map[string]any{"pad": strings.Repeat("a", 2*maxChunkSize)}})
+	old := e.loggedIn(t)
+	require.Greater(t, len(old), 1)
+
+	e.idp.Update(func(o *oidctest.Options) { o.Claims = nil })
+	rec := e.login(t, "", nil)
+	require.Equal(t, http.StatusFound, rec.Code)
+	fresh := requestCookies(t, rec.Header())
+	require.Len(t, sessionCookieLines(rec.Header()), 1)
+
+	jar := append(fresh, old[1:]...)
+	s, st, err := e.fe.readSession(t.Context(), jar)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", s.Subject)
+	assert.Equal(t, len(old), st.chunks)
+}
+
+func TestCallbackDeletesSessionsOfSameSID(t *testing.T) {
+	cases := []struct {
+		name    string
+		sid     string
+		records int
+		revoked int
+	}{
+		{name: "same sid", sid: "s1", records: 1, revoked: 1},
+		{name: "no sid", sid: "", records: 2, revoked: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ms := &mapStore{records: make(map[string]store.Record)}
+			e := newTestEnv(t, oidctest.Options{SID: tc.sid}, WithStore(ms))
+			first, _, err := e.fe.readSession(t.Context(), e.loggedIn(t))
+			require.NoError(t, err)
+			require.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
+
+			assert.Len(t, ms.records, tc.records)
+			assert.Len(t, e.idp.Revoked(), tc.revoked)
+			if tc.revoked > 0 {
+				assert.Equal(t, first.RefreshToken, e.idp.Revoked()[0])
+			}
+		})
+	}
+}
+
+func TestCallbackSeveralAudiencesWithAZP(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}, "azp": "app"}})
+	assert.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
+}
+
+func TestLoginPendingLimit(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{})
+	start := time.Now()
+	var cookies []*http.Cookie
+	var callbacks []string
+	for i := range maxPendingLogins + 1 {
+		e.fe.now = func() time.Time { return start.Add(time.Duration(i) * time.Second) }
+		rec := e.serve("/bff/login", cookies)
+		require.Equal(t, http.StatusFound, rec.Code)
+		cookies = applySetCookies(t, cookies, rec.Header())
+		hc := e.idp.Client()
+		hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		resp, err := hc.Get(rec.Header().Get("Location"))
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		callback, err := url.Parse(resp.Header.Get("Location"))
+		require.NoError(t, err)
+		callbacks = append(callbacks, callback.RequestURI())
+	}
+	assert.Len(t, cookies, maxPendingLogins)
+
+	assert.Equal(t, http.StatusBadRequest, e.serve(callbacks[0], cookies).Code)
+	assert.Equal(t, http.StatusFound, e.serve(callbacks[len(callbacks)-1], cookies).Code)
+}
+
+func applySetCookies(t *testing.T, cookies []*http.Cookie, h http.Header) []*http.Cookie {
+	t.Helper()
+	jar := make(map[string]string)
+	var order []string
+	for _, c := range cookies {
+		jar[c.Name] = c.Value
+		order = append(order, c.Name)
+	}
+	for _, line := range h.Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		require.NoError(t, err)
+		if _, ok := jar[c.Name]; !ok {
+			order = append(order, c.Name)
+		}
+		if c.MaxAge < 0 {
+			delete(jar, c.Name)
+			continue
+		}
+		jar[c.Name] = c.Value
+	}
+	var out []*http.Cookie
+	for _, name := range order {
+		if v, ok := jar[name]; ok {
+			out = append(out, &http.Cookie{Name: name, Value: v})
+			delete(jar, name)
+		}
+	}
+	return out
 }

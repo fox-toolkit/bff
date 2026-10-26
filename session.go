@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fox-toolkit/bff/store"
+	"golang.org/x/oauth2"
 )
 
 const sessionVersion = 1
@@ -33,8 +34,9 @@ type session struct {
 	LogoutCSRFToken string          `json:"lt"`
 	UserInfo        json.RawMessage `json:"ui,omitempty"`
 	Version         int             `json:"v"`
-	// Expiry is the expiration time of the access token.
+	// Expiry is the expiration time of the access token, and Lifetime its lifetime in seconds when it was issued.
 	Expiry   int64 `json:"exp,omitzero"`
+	Lifetime int64 `json:"ttl,omitzero"`
 	Created  int64 `json:"iat"`
 	LastSeen int64 `json:"seen"`
 }
@@ -56,6 +58,29 @@ func (s *session) expires(cfg *config) time.Time {
 		return idle
 	}
 	return absolute
+}
+
+// setToken sets the access token and its expiration. The refresh token is kept when the provider issues none.
+func (s *session) setToken(token *oauth2.Token, now time.Time) {
+	s.AccessToken = token.AccessToken
+	s.TokenType = token.TokenType
+	if token.RefreshToken != "" {
+		s.RefreshToken = token.RefreshToken
+	}
+	s.Expiry, s.Lifetime = 0, 0
+	if !token.Expiry.IsZero() {
+		s.Expiry = token.Expiry.Unix()
+		s.Lifetime = int64(token.Expiry.Sub(now) / time.Second)
+	}
+}
+
+// refreshSkew returns how long before its expiration the access token is refreshed, at most half its lifetime so
+// a short-lived token is not refreshed on every request.
+func (s *session) refreshSkew() time.Duration {
+	if s.Lifetime > 0 {
+		return min(refreshSkew, time.Duration(s.Lifetime)*time.Second/2)
+	}
+	return refreshSkew
 }
 
 func decodeSession(data []byte) (*session, error) {
@@ -120,7 +145,8 @@ func (fe *Frontend) readSession(ctx context.Context, cookies []*http.Cookie) (*s
 }
 
 // writeSession saves the session and adds the cookie to h when it changes. A stateful frontend creates a new session
-// key when the state has no id, so a login never reuses an existing session.
+// key when the state has no id, so a login never reuses an existing session. It returns errNoSession when an existing
+// session no longer exists in the store.
 func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session, st sessionState) error {
 	data, err := json.Marshal(s) //nolint:gosec // the tokens are encrypted before leaving the process
 	if err != nil {
@@ -139,13 +165,22 @@ func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session,
 	if err != nil {
 		return err
 	}
-	err = fe.cfg.store.Save(ctx, st.id, store.Record{
-		Expires: s.expires(fe.cfg),
-		Subject: s.Subject,
-		SID:     s.SID,
-		Data:    ciphertext,
-	})
-	if err != nil || key == nil {
+	r := store.Record{
+		Expires:   s.expires(fe.cfg),
+		Partition: fe.partition,
+		Subject:   s.Subject,
+		SID:       s.SID,
+		Data:      ciphertext,
+	}
+	if key == nil {
+		// An existing session is never created again, since it may have been ended in the meantime.
+		err = fe.cfg.store.Update(ctx, st.id, r)
+		if errors.Is(err, store.ErrNotFound) {
+			return errNoSession
+		}
+		return err
+	}
+	if err := fe.cfg.store.Create(ctx, st.id, r); err != nil {
 		return err
 	}
 	return sessionCookie.write(h, fe.aead, key, 0, st.chunks)
@@ -157,6 +192,25 @@ func (fe *Frontend) deleteSession(ctx context.Context, h http.Header, st session
 		return nil
 	}
 	return fe.cfg.store.Delete(ctx, st.id)
+}
+
+// deleteSessionsBy deletes the stored sessions of the subject, restricted to the sid when it is not empty, and revokes
+// their refresh tokens.
+func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) error {
+	records, err := fe.cfg.store.DeleteBy(ctx, fe.partition, subject, sid)
+	if err != nil {
+		return err
+	}
+	for id, r := range records {
+		data, err := fe.aead.Decrypt(r.Data, storeAssociatedData(id))
+		if err != nil {
+			continue
+		}
+		if s, err := decodeSession(data); err == nil && s.RefreshToken != "" {
+			_ = fe.revoke(ctx, s.RefreshToken)
+		}
+	}
+	return nil
 }
 
 // storeID returns the store id of a session key. Only the hash is stored, so the store content cannot be used as a

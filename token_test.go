@@ -5,11 +5,14 @@
 package bff
 
 import (
+	"bufio"
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,18 +22,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestToken(t *testing.T) {
-	_, ok := Token(t.Context())
+func TestAccessToken(t *testing.T) {
+	_, ok := AccessToken(t.Context())
 	assert.False(t, ok)
 
 	ctx := context.WithValue(t.Context(), sessionKey{}, &requestState{})
-	_, ok = Token(ctx)
+	_, ok = AccessToken(ctx)
 	assert.False(t, ok)
 
 	s := testSession()
 	s.TokenType = "Bearer"
 	ctx = context.WithValue(t.Context(), sessionKey{}, &requestState{session: s})
-	token, ok := Token(ctx)
+	token, ok := AccessToken(ctx)
 	require.True(t, ok)
 	assert.Equal(t, "access-token", token.AccessToken)
 	assert.Equal(t, "Bearer", token.TokenType)
@@ -102,4 +105,101 @@ func TestTransportKeepsRequest(t *testing.T) {
 	_ = resp.Body.Close()
 	assert.Equal(t, "Bearer access-token", (<-u.requests).Header.Get("Authorization"))
 	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestTransportRedirect(t *testing.T) {
+	var got string
+	record := func(_ http.ResponseWriter, r *http.Request) { got = r.Header.Get("Authorization") }
+	other := httptest.NewServer(http.HandlerFunc(record))
+	defer other.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/next", record)
+	mux.HandleFunc("/same", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/next", http.StatusFound) })
+	mux.HandleFunc("/other", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/next", http.StatusFound)
+	})
+	api := httptest.NewServer(mux)
+	defer api.Close()
+
+	s := testSession()
+	s.TokenType = "Bearer"
+	ctx := context.WithValue(t.Context(), sessionKey{}, &requestState{session: s})
+	for path, want := range map[string]string{"/same": "Bearer access-token", "/other": ""} {
+		t.Run(path, func(t *testing.T) {
+			got = "unset"
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, api.URL+path, nil)
+			require.NoError(t, err)
+			resp, err := (&http.Client{Transport: Transport(nil)}).Do(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+func TestTransportUpgrade(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, brw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
+			"Set-Cookie: __Host-bff.0=evil; Path=/\r\nSet-Cookie: api=1\r\n\r\n")
+		_ = brw.Flush()
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second})
+	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) { pr.SetURL(target) }, Transport: Transport(nil)}
+	_, err = e.router.Add(fox.MethodAny, "/ws", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Middleware()))
+	require.NoError(t, err)
+	cookies := e.loggedIn(t)
+	e.skipAhead(20 * time.Second)
+	app := httptest.NewServer(e.router)
+	defer app.Close()
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(app.URL, "http://"))
+	require.NoError(t, err)
+	defer conn.Close()
+	var pairs []string
+	for _, c := range cookies {
+		pairs = append(pairs, c.Name+"="+c.Value)
+	}
+	_, err = conn.Write([]byte("GET /ws HTTP/1.1\r\nHost: app\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: " +
+		strings.Join(pairs, "; ") + "\r\n\r\n"))
+	require.NoError(t, err)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	lines := resp.Header.Values("Set-Cookie")
+	assert.Contains(t, lines, "api=1")
+	assert.NotContains(t, strings.Join(lines, "\n"), "evil")
+	assert.Len(t, sessionCookieLines(resp.Header), 1)
+}
+
+func TestClaims(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{Claims: map[string]any{"name": "Alice"}})
+	var got map[string]any
+	var ok bool
+	h := func(c *fox.Context) {
+		got, ok = Claims(c.Request().Context())
+		c.Writer().WriteHeader(http.StatusOK)
+	}
+	_, err := e.router.Add(fox.MethodGet, "/me", h, fox.WithMiddleware(e.fe.Middleware()), AllowAnonymous())
+	require.NoError(t, err)
+
+	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/me", e.loggedIn(t), nil).Code)
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"sub": "alice", "name": "Alice"}, got)
+
+	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/me", nil, nil).Code)
+	assert.False(t, ok)
+
+	_, ok = Claims(t.Context())
+	assert.False(t, ok)
 }
