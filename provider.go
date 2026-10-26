@@ -11,17 +11,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 // Provider is an OpenID Provider configured from its metadata. A Provider can be shared by several clients.
 type Provider struct {
-	// ctx is the context of the ID token verifiers, which fetch the provider keys with the HTTP client of the provider.
-	// It is not canceled with the context passed to NewProvider.
-	ctx                  context.Context
 	oidc                 *oidc.Provider
 	client               *http.Client
+	keys                 *keySet
 	nonces               *nonceCache
 	issuer               string
 	endSessionEndpoint   string
@@ -95,13 +94,13 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		oidc:                 p,
 		client:               cfg.client,
 		issuer:               issuer,
-		ctx:                  oidc.ClientContext(context.Background(), cfg.client),
+		keys:                 newKeySet(cfg.client, metadata.JWKSURI),
 		endSessionEndpoint:   metadata.EndSessionEndpoint,
 		revocationEndpoint:   metadata.RevocationEndpoint,
 		parEndpoint:          metadata.PAREndpoint,
 		promptValues:         metadata.PromptValues,
 		dpopAlgs:             metadata.DPoPAlgs,
-		idTokenAlgs:          metadata.IDTokenAlgs,
+		idTokenAlgs:          slices.DeleteFunc(metadata.IDTokenAlgs, func(alg string) bool { return !slices.Contains(signingAlgs, alg) }),
 		authMethods:          metadata.AuthMethods,
 		authAlgs:             metadata.AuthAlgs,
 		requestObjectAlgs:    metadata.RequestObjectAlgs,

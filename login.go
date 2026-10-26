@@ -375,12 +375,18 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	return s, nil
 }
 
-// verifyIDToken verifies the ID token with go-oidc, then its azp claim as defined by OpenID Connect Core 3.1.3.7
-// steps 4 and 5, which go-oidc does not check.
+// verifyIDToken verifies the ID token with go-oidc, then the claims that go-oidc does not check. OpenID Connect Core 2
+// requires sub and iat, and OpenID Connect Core 3.1.3.7 steps 4 and 5 define the checks of azp.
 func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, error) {
 	idToken, err := fe.verifier.Verify(ctx, raw)
 	if err != nil {
 		return nil, err
+	}
+	if idToken.Subject == "" {
+		return nil, errors.New("sub required")
+	}
+	if idToken.IssuedAt.IsZero() {
+		return nil, errors.New("iat required")
 	}
 	var claims struct {
 		AZP string `json:"azp"`

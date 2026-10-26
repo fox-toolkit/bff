@@ -81,6 +81,11 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		return nil, fmt.Errorf("%w: no signing algorithm in common with the provider", ErrInvalidConfig)
 	}
 
+	algs := cfg.signingAlgs
+	if len(algs) == 0 {
+		algs = p.idTokenAlgs
+	}
+
 	auth, err := newClientAuth(client, p)
 	if err != nil {
 		return nil, err
@@ -109,7 +114,7 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		cfg:      cfg,
 		aead:     scopedAEAD{AEAD: aead, scope: partition},
 		provider: p,
-		verifier: p.oidc.VerifierContext(p.ctx, &oidc.Config{ClientID: client.ClientID, SupportedSigningAlgs: cfg.signingAlgs}),
+		verifier: oidc.NewVerifier(p.issuer, p.keys, &oidc.Config{ClientID: client.ClientID, SupportedSigningAlgs: algs}),
 		oauth2: oauth2.Config{
 			ClientID:    client.ClientID,
 			Endpoint:    p.oidc.Endpoint(),

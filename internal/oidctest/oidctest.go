@@ -47,7 +47,7 @@ type Options struct {
 	ClientKey crypto.PublicKey
 	// Metadata is added to the discovery document. A nil value removes a field.
 	Metadata map[string]any
-	// Claims are added to the ID tokens.
+	// Claims are added to the ID tokens. A nil value removes a claim.
 	Claims map[string]any
 	// UserInfo is added to the UserInfo response.
 	UserInfo map[string]any
@@ -66,6 +66,8 @@ type Options struct {
 	LoggedOut           bool
 	// PAR advertises the pushed authorization request endpoint.
 	PAR bool
+	// DecoyKeys adds to the key set the keys a client must ignore, as the OpenID conformance suite does.
+	DecoyKeys bool
 	// IgnoreDPoP issues bearer access tokens to the requests with a DPoP proof.
 	IgnoreDPoP bool
 	// Plain serves the provider over HTTP, for browser tests. It is read once by [NewServer].
@@ -253,12 +255,24 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+	keys := []any{jose.JSONWebKey{
 		Key:       &signingKey().PublicKey,
 		KeyID:     keyID,
 		Algorithm: string(jose.RS256),
 		Use:       "sig",
-	}}})
+	}}
+	s.mu.Lock()
+	if s.opts.DecoyKeys {
+		keys = append(keys,
+			map[string]string{"kty": "unknown", "kid": "decoy-kty"},
+			map[string]string{"kty": "EC", "kid": "decoy-curve", "crv": "P-9999", "x": "AQ", "y": "AQ"},
+			map[string]string{"kty": "EC", "kid": "decoy-secp256k1", "crv": "secp256k1", "x": "AQ", "y": "AQ"},
+			map[string]string{"kty": "RSA", "kid": "decoy-alg", "alg": "unknown", "n": "AQ", "e": "AQAB"},
+			map[string]string{"kty": "oct", "kid": "decoy-oct", "k": "c2VjcmV0"},
+		)
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
 }
 
 func (s *Server) par(w http.ResponseWriter, r *http.Request) {
@@ -426,6 +440,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		claims["sid"] = g.sid
 	}
 	maps.Copy(claims, s.opts.Claims)
+	maps.DeleteFunc(claims, func(_ string, v any) bool { return v == nil })
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  accessToken,

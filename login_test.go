@@ -326,6 +326,8 @@ func TestCallbackInvalid(t *testing.T) {
 		{name: "expired id token", opts: oidctest.Options{Claims: map[string]any{"exp": time.Now().Add(-time.Hour).Unix()}}},
 		{name: "azp mismatch", opts: oidctest.Options{Claims: map[string]any{"azp": "other"}}},
 		{name: "several audiences without azp", opts: oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}}}},
+		{name: "missing sub", opts: oidctest.Options{Claims: map[string]any{"sub": nil}}},
+		{name: "missing iat", opts: oidctest.Options{Claims: map[string]any{"iat": nil}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -440,6 +442,11 @@ func TestCallbackSigningAlgorithms(t *testing.T) {
 			assert.Equal(t, code, e.login(t, "", nil).Code)
 		})
 	}
+}
+
+func TestCallbackDecoyKeys(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{DecoyKeys: true})
+	assert.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
 }
 
 func TestCallbackSeveralAudiencesWithAZP(t *testing.T) {

@@ -126,8 +126,9 @@ func WithDPoP(enable bool) Option {
 	})
 }
 
-// WithSigningAlgorithms restricts the algorithms accepted for the signature of the ID tokens and logout tokens. By
-// default, the algorithms advertised by the provider are accepted.
+// WithSigningAlgorithms restricts the algorithms accepted for the signature of the ID tokens and logout tokens. They
+// should include the algorithm registered for the client at the provider. By default, the algorithms advertised by the
+// provider are accepted.
 func WithSigningAlgorithms(algs ...string) Option {
 	return optionFunc(func(c *config) error {
 		for _, alg := range algs {
