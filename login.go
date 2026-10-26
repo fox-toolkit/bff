@@ -144,6 +144,14 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 // pushAuthorizationRequest pushes the authorization request to the provider, as defined by RFC 9126, and returns its
 // request URI.
 func (fe *Frontend) pushAuthorizationRequest(ctx context.Context, params url.Values) (string, error) {
+	if fe.requestObjectAlg != "" {
+		// RFC 9126 3: the form only has the request object and the parameters of the client authentication.
+		request, err := fe.auth.requestObject(params, fe.requestObjectAlg, fe.now())
+		if err != nil {
+			return "", err
+		}
+		params = url.Values{"request": {request}}
+	}
 	req, err := fe.auth.newRequest(ctx, fe.parEndpoint, params, fe.now)
 	if err != nil {
 		return "", err

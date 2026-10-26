@@ -5,10 +5,12 @@
 package bff
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"maps"
 	"testing"
 	"time"
 
@@ -178,6 +180,68 @@ func TestNewFrontend(t *testing.T) {
 			}
 			_, err := NewFrontend(c, aead, tc.opts...)
 			assert.ErrorIs(t, err, ErrInvalidConfig)
+		})
+	}
+}
+
+func TestNewFrontendRequestObject(t *testing.T) {
+	keys := generateKeys(t)
+	par := "https://idp.example.com/par"
+	cases := []struct {
+		name     string
+		key      crypto.Signer
+		metadata map[string]any
+		opts     []Option
+		alg      string
+		authAlg  string
+	}{
+		{name: "ec", key: keys["ec"], metadata: map[string]any{
+			"pushed_authorization_request_endpoint": par,
+		}, opts: []Option{WithRequestObject(true)}, alg: "ES256", authAlg: "ES256"},
+		{name: "algorithm chosen apart from the assertion", key: keys["rsa"], metadata: map[string]any{
+			"pushed_authorization_request_endpoint":            par,
+			"token_endpoint_auth_signing_alg_values_supported": []string{"RS256"},
+			"request_object_signing_alg_values_supported":      []string{"PS256"},
+		}, opts: []Option{WithRequestObject(true)}, alg: "PS256", authAlg: "RS256"},
+		{name: "unsupported algorithm", key: keys["ec"], metadata: map[string]any{
+			"pushed_authorization_request_endpoint":       par,
+			"request_object_signing_alg_values_supported": []string{"PS256"},
+		}, opts: []Option{WithRequestObject(true)}},
+		{name: "without client key", metadata: map[string]any{
+			"pushed_authorization_request_endpoint": par,
+		}, opts: []Option{WithRequestObject(true)}},
+		{name: "without pushed authorization endpoint", key: keys["ec"], opts: []Option{WithRequestObject(true)}},
+		{name: "pushed authorization disabled", key: keys["ec"], metadata: map[string]any{
+			"pushed_authorization_request_endpoint": par,
+		}, opts: []Option{WithRequestObject(true), WithPushedAuthorization(PushedAuthorizationDisabled)}},
+		{name: "required by the provider", key: keys["ec"], metadata: map[string]any{
+			"pushed_authorization_request_endpoint": par,
+			"require_signed_request_object":         true,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata := map[string]any{"token_endpoint_auth_methods_supported": bothMethods}
+			maps.Copy(metadata, tc.metadata)
+			c := Client{
+				Provider:    newTestProvider(t, metadata),
+				ClientID:    "app",
+				RedirectURL: "https://app.example.com/bff/callback",
+				Scopes:      []string{"openid"},
+			}
+			if tc.key != nil {
+				c.ClientKey = tc.key
+			} else {
+				c.ClientSecret = oidctest.ClientSecret
+			}
+			fe, err := NewFrontend(c, nopAEAD{}, tc.opts...)
+			if tc.alg == "" {
+				assert.ErrorIs(t, err, ErrInvalidConfig)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.alg, fe.requestObjectAlg)
+			assert.Equal(t, tc.authAlg, fe.auth.alg)
 		})
 	}
 }

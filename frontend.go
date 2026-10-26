@@ -31,6 +31,7 @@ type Frontend struct {
 	logger                *slog.Logger
 	postLogoutRedirectURL string
 	parEndpoint           string
+	requestObjectAlg      string
 	// partition identifies the frontend, by its issuer and client ID.
 	partition string
 }
@@ -85,6 +86,23 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		return nil, err
 	}
 
+	var requestObjectAlg string
+	if cfg.requestObject {
+		if client.ClientKey == nil {
+			return nil, fmt.Errorf("%w: request object without client key", ErrInvalidConfig)
+		}
+		if parEndpoint == "" {
+			return nil, fmt.Errorf("%w: request object without pushed authorization requests", ErrInvalidConfig)
+		}
+		var ok bool
+		requestObjectAlg, ok = keyAlg(client.ClientKey.Public(), p.requestObjectAlgs)
+		if !ok {
+			return nil, fmt.Errorf("%w: provider does not support the algorithm of the client key for request objects", ErrInvalidConfig)
+		}
+	} else if p.requireRequestObject {
+		return nil, fmt.Errorf("%w: provider requires request objects", ErrInvalidConfig)
+	}
+
 	sum := sha256.Sum256([]byte(p.issuer + "\x00" + client.ClientID))
 	partition := base64.RawURLEncoding.EncodeToString(sum[:])
 	fe := &Frontend{
@@ -101,6 +119,7 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		auth:                  auth,
 		postLogoutRedirectURL: client.PostLogoutRedirectURL,
 		parEndpoint:           parEndpoint,
+		requestObjectAlg:      requestObjectAlg,
 		now:                   time.Now,
 		cop:                   http.NewCrossOriginProtection(),
 		logger:                slog.New(cfg.logHandler).With("client_id", client.ClientID),

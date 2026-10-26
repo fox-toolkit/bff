@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +43,7 @@ var signingKey = sync.OnceValue(func() *rsa.PrivateKey {
 
 // Options configures a [Server]. Every field can be changed while the server runs, with [Server.Update].
 type Options struct {
-	// ClientKey is the public key that verifies the private_key_jwt assertions of the clients.
+	// ClientKey is the public key that verifies the private_key_jwt assertions and the request objects of the clients.
 	ClientKey crypto.PublicKey
 	// Metadata is added to the discovery document. A nil value removes a field.
 	Metadata map[string]any
@@ -89,6 +90,7 @@ type Server struct {
 	revoked     []string
 	endSessions []EndSession
 	assertions  []Assertion
+	requests    []RequestObject
 	opts        Options
 	mu          sync.Mutex
 }
@@ -166,6 +168,20 @@ func (s *Server) Assertions() []Assertion {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Assertion(nil), s.assertions...)
+}
+
+// RequestObject is a request object accepted by the pushed authorization request endpoint.
+type RequestObject struct {
+	Claims map[string]any
+	Alg    string
+	KeyID  string
+}
+
+// RequestObjects returns the request objects accepted by the provider.
+func (s *Server) RequestObjects() []RequestObject {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RequestObject(nil), s.requests...)
 }
 
 // Sign returns a JWT with the given claims and typ header, signed by the provider key.
@@ -251,9 +267,20 @@ func (s *Server) par(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_client"})
 		return
 	}
+	params := r.PostForm
+	if r.PostForm.Has("request") {
+		var err error
+		if params, err = s.verifyRequestObject(r.PostForm, clientID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request_object", "error_description": err.Error()})
+			return
+		}
+	} else if s.metadataBool("require_signed_request_object") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "request object required"})
+		return
+	}
 	requestURI := "urn:ietf:params:oauth:request_uri:" + randomString()
 	s.mu.Lock()
-	s.pushed[requestURI] = r.PostForm
+	s.pushed[requestURI] = params
 	s.mu.Unlock()
 	writeJSON(w, http.StatusCreated, map[string]any{"request_uri": requestURI, "expires_in": 60})
 }
@@ -270,7 +297,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		q = pushed
-	} else if s.requirePAR() {
+	} else if s.metadataBool("require_pushed_authorization_requests") || s.metadataBool("require_signed_request_object") {
 		http.Error(w, "pushed authorization request required", http.StatusBadRequest)
 		return
 	}
@@ -463,11 +490,75 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) requirePAR() bool {
+func (s *Server) metadataBool(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	required, _ := s.opts.Metadata["require_pushed_authorization_requests"].(bool)
-	return required
+	v, _ := s.opts.Metadata[name].(bool)
+	return v
+}
+
+// supportedAlg reports whether the alg is in the metadata list, or the list is not set. It must be called with the
+// lock held.
+func (s *Server) supportedAlg(name, alg string) bool {
+	algs, ok := s.opts.Metadata[name].([]string)
+	return !ok || slices.Contains(algs, alg)
+}
+
+// verifyRequestObject verifies a pushed request object as required by RFC 9126 3 and the FAPI 2.0 Message Signing
+// profile, and returns its authorization parameters.
+func (s *Server) verifyRequestObject(form url.Values, clientID string) (url.Values, error) {
+	for k := range form {
+		switch k {
+		case "request", "client_id", "client_assertion_type", "client_assertion":
+		default:
+			return nil, errors.New("parameter outside the request object: " + k)
+		}
+	}
+	algs := []jose.SignatureAlgorithm{jose.ES256, jose.PS256, jose.RS256, jose.EdDSA}
+	jws, err := jose.ParseSigned(form.Get("request"), algs)
+	if err != nil {
+		return nil, err
+	}
+	header := jws.Signatures[0].Protected
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if header.ExtraHeaders[jose.HeaderType] != "oauth-authz-req+jwt" || s.opts.ClientKey == nil ||
+		!s.supportedAlg("request_object_signing_alg_values_supported", header.Algorithm) {
+		return nil, errors.New("invalid header")
+	}
+	payload, err := jws.Verify(s.opts.ClientKey)
+	if err != nil {
+		return nil, err
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, err
+	}
+	nbf, _ := claims["nbf"].(float64)
+	exp, _ := claims["exp"].(float64)
+	now := float64(time.Now().Unix())
+	switch {
+	case claims["aud"] != s.URL, claims["client_id"] != clientID:
+		return nil, errors.New("invalid aud or client_id")
+	case nbf == 0 || nbf > now || now-nbf > 3600 || exp <= now || exp-nbf > 3600:
+		return nil, errors.New("invalid nbf or exp")
+	case claims["request"] != nil || claims["request_uri"] != nil:
+		return nil, errors.New("nested request")
+	}
+	params := make(url.Values)
+	for k, v := range claims {
+		switch k {
+		case "iss", "aud", "nbf", "exp", "iat", "jti":
+			continue
+		}
+		str, ok := v.(string)
+		if !ok {
+			return nil, errors.New("non string parameter: " + k)
+		}
+		params.Set(k, str)
+	}
+	s.requests = append(s.requests, RequestObject{Claims: claims, Alg: header.Algorithm, KeyID: header.KeyID})
+	return params, nil
 }
 
 // authenticate checks client_secret_basic or client_secret_post and returns the client ID.
@@ -499,7 +590,8 @@ func (s *Server) verifyAssertion(r *http.Request) (string, bool) {
 	header := jws.Signatures[0].Protected
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if header.ExtraHeaders[jose.HeaderType] != "client-authentication+jwt" || s.opts.ClientKey == nil {
+	if header.ExtraHeaders[jose.HeaderType] != "client-authentication+jwt" || s.opts.ClientKey == nil ||
+		!s.supportedAlg("token_endpoint_auth_signing_alg_values_supported", header.Algorithm) {
 		return "", false
 	}
 	payload, err := jws.Verify(s.opts.ClientKey)

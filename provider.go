@@ -19,21 +19,23 @@ import (
 type Provider struct {
 	// ctx is the context of the ID token verifiers, which fetch the provider keys with the HTTP client of the provider.
 	// It is not canceled with the context passed to NewProvider.
-	ctx                context.Context
-	oidc               *oidc.Provider
-	client             *http.Client
-	nonces             *nonceCache
-	issuer             string
-	endSessionEndpoint string
-	revocationEndpoint string
-	parEndpoint        string
-	promptValues       []string
-	dpopAlgs           []string
-	idTokenAlgs        []string
-	authMethods        []string
-	authAlgs           []string
-	issParameter       bool
-	requirePAR         bool
+	ctx                  context.Context
+	oidc                 *oidc.Provider
+	client               *http.Client
+	nonces               *nonceCache
+	issuer               string
+	endSessionEndpoint   string
+	revocationEndpoint   string
+	parEndpoint          string
+	promptValues         []string
+	dpopAlgs             []string
+	idTokenAlgs          []string
+	authMethods          []string
+	authAlgs             []string
+	requestObjectAlgs    []string
+	issParameter         bool
+	requirePAR           bool
+	requireRequestObject bool
 }
 
 // NewProvider retrieves the provider metadata of the issuer with OpenID Connect Discovery. The issuer must use https,
@@ -56,17 +58,19 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 	}
 
 	var metadata struct {
-		JWKSURI            string   `json:"jwks_uri"`
-		EndSessionEndpoint string   `json:"end_session_endpoint"`
-		RevocationEndpoint string   `json:"revocation_endpoint"`
-		PAREndpoint        string   `json:"pushed_authorization_request_endpoint"`
-		PromptValues       []string `json:"prompt_values_supported"`
-		DPoPAlgs           []string `json:"dpop_signing_alg_values_supported"`
-		IDTokenAlgs        []string `json:"id_token_signing_alg_values_supported"`
-		AuthMethods        []string `json:"token_endpoint_auth_methods_supported"`
-		AuthAlgs           []string `json:"token_endpoint_auth_signing_alg_values_supported"`
-		ISSParameter       bool     `json:"authorization_response_iss_parameter_supported"`
-		RequirePAR         bool     `json:"require_pushed_authorization_requests"`
+		JWKSURI              string   `json:"jwks_uri"`
+		EndSessionEndpoint   string   `json:"end_session_endpoint"`
+		RevocationEndpoint   string   `json:"revocation_endpoint"`
+		PAREndpoint          string   `json:"pushed_authorization_request_endpoint"`
+		PromptValues         []string `json:"prompt_values_supported"`
+		DPoPAlgs             []string `json:"dpop_signing_alg_values_supported"`
+		IDTokenAlgs          []string `json:"id_token_signing_alg_values_supported"`
+		AuthMethods          []string `json:"token_endpoint_auth_methods_supported"`
+		AuthAlgs             []string `json:"token_endpoint_auth_signing_alg_values_supported"`
+		RequestObjectAlgs    []string `json:"request_object_signing_alg_values_supported"`
+		ISSParameter         bool     `json:"authorization_response_iss_parameter_supported"`
+		RequirePAR           bool     `json:"require_pushed_authorization_requests"`
+		RequireRequestObject bool     `json:"require_signed_request_object"`
 	}
 	if err := p.Claims(&metadata); err != nil {
 		return nil, err
@@ -88,21 +92,23 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 	}
 
 	return &Provider{
-		oidc:               p,
-		client:             cfg.client,
-		issuer:             issuer,
-		ctx:                oidc.ClientContext(context.Background(), cfg.client),
-		endSessionEndpoint: metadata.EndSessionEndpoint,
-		revocationEndpoint: metadata.RevocationEndpoint,
-		parEndpoint:        metadata.PAREndpoint,
-		promptValues:       metadata.PromptValues,
-		dpopAlgs:           metadata.DPoPAlgs,
-		idTokenAlgs:        metadata.IDTokenAlgs,
-		authMethods:        metadata.AuthMethods,
-		authAlgs:           metadata.AuthAlgs,
-		nonces:             newNonceCache(),
-		issParameter:       metadata.ISSParameter,
-		requirePAR:         metadata.RequirePAR,
+		oidc:                 p,
+		client:               cfg.client,
+		issuer:               issuer,
+		ctx:                  oidc.ClientContext(context.Background(), cfg.client),
+		endSessionEndpoint:   metadata.EndSessionEndpoint,
+		revocationEndpoint:   metadata.RevocationEndpoint,
+		parEndpoint:          metadata.PAREndpoint,
+		promptValues:         metadata.PromptValues,
+		dpopAlgs:             metadata.DPoPAlgs,
+		idTokenAlgs:          metadata.IDTokenAlgs,
+		authMethods:          metadata.AuthMethods,
+		authAlgs:             metadata.AuthAlgs,
+		requestObjectAlgs:    metadata.RequestObjectAlgs,
+		nonces:               newNonceCache(),
+		issParameter:         metadata.ISSParameter,
+		requirePAR:           metadata.RequirePAR,
+		requireRequestObject: metadata.RequireRequestObject,
 	}, nil
 }
 

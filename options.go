@@ -50,6 +50,7 @@ type config struct {
 	userInfo         bool
 	dpop             bool
 	crossOriginLogin bool
+	requestObject    bool
 	par              PushedAuthorization
 }
 
@@ -179,6 +180,16 @@ func WithPushedAuthorization(mode PushedAuthorization) Option {
 			return fmt.Errorf("%w: invalid pushed authorization mode", ErrInvalidConfig)
 		}
 		c.par = mode
+		return nil
+	})
+}
+
+// WithRequestObject sends the authorization parameters in a request object signed with the client key, as defined
+// by RFC 9101. [NewFrontend] fails if the client has no key or if the authorization requests are not pushed to the
+// provider. It also fails if the provider requires request objects and this option is disabled.
+func WithRequestObject(enable bool) Option {
+	return optionFunc(func(c *config) error {
+		c.requestObject = enable
 		return nil
 	})
 }

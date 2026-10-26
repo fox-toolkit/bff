@@ -28,10 +28,11 @@ import (
 )
 
 const (
-	clientSecretBasic = "client_secret_basic"
-	privateKeyJWT     = "private_key_jwt"
-	assertionType     = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-	assertionLifetime = time.Minute
+	clientSecretBasic     = "client_secret_basic"
+	privateKeyJWT         = "private_key_jwt"
+	assertionType         = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+	assertionLifetime     = time.Minute
+	requestObjectLifetime = time.Minute
 )
 
 // clientAuth authenticates the requests of the client to the provider, with client_secret_basic (RFC 6749 2.3.1) or
@@ -63,16 +64,23 @@ func newClientAuth(c Client, p *Provider) (clientAuth, error) {
 		return auth, nil
 	}
 
-	algs := clientKeyAlgs(auth.key.Public())
-	auth.alg = algs[0]
-	if len(p.authAlgs) > 0 {
-		i := slices.IndexFunc(algs, func(alg string) bool { return slices.Contains(p.authAlgs, alg) })
-		if i < 0 {
-			return clientAuth{}, fmt.Errorf("%w: provider does not support the algorithm of the client key", ErrInvalidConfig)
-		}
-		auth.alg = algs[i]
+	alg, ok := keyAlg(auth.key.Public(), p.authAlgs)
+	if !ok {
+		return clientAuth{}, fmt.Errorf("%w: provider does not support the algorithm of the client key", ErrInvalidConfig)
 	}
+	auth.alg = alg
 	return auth, nil
+}
+
+// keyAlg returns the preferred algorithm of the client key that the provider supports. Every algorithm is supported
+// when the provider does not advertise any.
+func keyAlg(pub crypto.PublicKey, supported []string) (string, bool) {
+	algs := clientKeyAlgs(pub)
+	i := slices.IndexFunc(algs, func(alg string) bool { return len(supported) == 0 || slices.Contains(supported, alg) })
+	if i < 0 {
+		return "", false
+	}
+	return algs[i], true
 }
 
 // clientKeyAlgs returns the algorithms of a client key, in order of preference.
@@ -155,15 +163,7 @@ func newFormRequest(ctx context.Context, endpoint, body string) (*http.Request, 
 // assertion returns a client authentication JWT. The audience is the issuer, as required by the FAPI 2.0 Security
 // Profile and draft-ietf-oauth-rfc7523bis.
 func (a *clientAuth) assertion(now time.Time) (string, error) {
-	header, err := json.Marshal(struct {
-		Alg   string `json:"alg"`
-		Typ   string `json:"typ"`
-		KeyID string `json:"kid,omitempty"`
-	}{Alg: a.alg, Typ: "client-authentication+jwt", KeyID: a.keyID})
-	if err != nil {
-		return "", err
-	}
-	payload, err := json.Marshal(struct {
+	return a.signJWT(a.alg, "client-authentication+jwt", struct {
 		Issuer   string `json:"iss"`
 		Subject  string `json:"sub"`
 		Audience string `json:"aud"`
@@ -178,12 +178,39 @@ func (a *clientAuth) assertion(now time.Time) (string, error) {
 		IAT:      now.Unix(),
 		EXP:      now.Add(assertionLifetime).Unix(),
 	})
+}
+
+// requestObject returns the authorization parameters in a request object signed with the alg (RFC 9101 4), with the
+// claims required by the FAPI 2.0 Message Signing profile.
+func (a *clientAuth) requestObject(params url.Values, alg string, now time.Time) (string, error) {
+	claims := make(map[string]any, len(params)+4)
+	for k := range params {
+		claims[k] = params.Get(k)
+	}
+	claims["iss"] = a.id
+	claims["aud"] = a.audience
+	claims["nbf"] = now.Unix()
+	claims["exp"] = now.Add(requestObjectLifetime).Unix()
+	return a.signJWT(alg, "oauth-authz-req+jwt", claims)
+}
+
+// signJWT returns the claims signed with the client key.
+func (a *clientAuth) signJWT(alg, typ string, claims any) (string, error) {
+	header, err := json.Marshal(struct {
+		Alg   string `json:"alg"`
+		Typ   string `json:"typ"`
+		KeyID string `json:"kid,omitempty"`
+	}{Alg: alg, Typ: typ, KeyID: a.keyID})
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
 	}
 
 	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
-	sig, err := signJWS(a.key, a.alg, []byte(input))
+	sig, err := signJWS(a.key, alg, []byte(input))
 	if err != nil {
 		return "", err
 	}

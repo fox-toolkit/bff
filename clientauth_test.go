@@ -11,6 +11,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"maps"
 	"net/http"
 	"testing"
 	"time"
@@ -119,4 +120,53 @@ func TestPrivateKeyJWTDPoPNonce(t *testing.T) {
 	e.idp.Update(func(o *oidctest.Options) { o.DPoPNonce = "n2" })
 	e.skipAhead(40 * time.Second)
 	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
+}
+
+func TestRequestObject(t *testing.T) {
+	keys := generateKeys(t)
+	cases := []struct {
+		name     string
+		key      crypto.Signer
+		authAlg  string
+		alg      string
+		metadata map[string]any
+	}{
+		{name: "ec", key: keys["ec"], authAlg: "ES256", alg: "ES256"},
+		{name: "rsa", key: keys["rsa"], authAlg: "RS256", alg: "PS256", metadata: map[string]any{
+			"token_endpoint_auth_signing_alg_values_supported": []string{"RS256"},
+			"request_object_signing_alg_values_supported":      []string{"PS256"},
+		}},
+		{name: "ed25519", key: keys["ed25519"], authAlg: "EdDSA", alg: "EdDSA"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := oidctest.Options{
+				PAR:       true,
+				ClientKey: tc.key.Public(),
+				Metadata: map[string]any{
+					"token_endpoint_auth_methods_supported": bothMethods,
+					"require_signed_request_object":         true,
+				},
+			}
+			maps.Copy(opts.Metadata, tc.metadata)
+			e := newTestEnvWithClient(t, opts, func(c *Client) {
+				c.ClientSecret, c.ClientKey, c.ClientKeyID = "", tc.key, "k1"
+			}, WithRequestObject(true), WithDPoP(true))
+			e.loggedIn(t)
+
+			objects := e.idp.RequestObjects()
+			require.Len(t, objects, 1)
+			assert.Equal(t, tc.alg, objects[0].Alg)
+			for _, a := range e.idp.Assertions() {
+				assert.Equal(t, tc.authAlg, a.Alg)
+			}
+			assert.Equal(t, "k1", objects[0].KeyID)
+			claims := objects[0].Claims
+			assert.Equal(t, "app", claims["iss"])
+			assert.Equal(t, e.idp.URL, claims["aud"])
+			assert.Equal(t, "app", claims["client_id"])
+			assert.NotEmpty(t, claims["dpop_jkt"])
+			assert.InDelta(t, 60, claims["exp"].(float64)-claims["nbf"].(float64), 0)
+		})
+	}
 }
