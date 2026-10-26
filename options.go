@@ -37,16 +37,17 @@ func (f optionFunc) apply(c *config) error {
 }
 
 type config struct {
-	logHandler      slog.Handler
-	store           store.Store
-	unauthorized    fox.HandlerFunc
-	csrfHeader      string
-	csrfValue       string
-	idleTimeout     time.Duration
-	absoluteTimeout time.Duration
-	userInfo        bool
-	dpop            bool
-	par             PushedAuthorization
+	logHandler       slog.Handler
+	store            store.Store
+	unauthorized     fox.HandlerFunc
+	csrfHeader       string
+	csrfValue        string
+	idleTimeout      time.Duration
+	absoluteTimeout  time.Duration
+	userInfo         bool
+	dpop             bool
+	crossOriginLogin bool
+	par              PushedAuthorization
 }
 
 func defaultConfig() *config {
@@ -105,18 +106,27 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 }
 
 // WithUserInfo requests the UserInfo endpoint at login and adds its claims to the ID token claims.
-func WithUserInfo() Option {
+func WithUserInfo(enable bool) Option {
 	return optionFunc(func(c *config) error {
-		c.userInfo = true
+		c.userInfo = enable
 		return nil
 	})
 }
 
 // WithDPoP binds the access tokens to a key generated for each session, as defined by RFC 9449. The remote APIs must
 // accept DPoP-bound access tokens.
-func WithDPoP() Option {
+func WithDPoP(enable bool) Option {
 	return optionFunc(func(c *config) error {
-		c.dpop = true
+		c.dpop = enable
+		return nil
+	})
+}
+
+// WithCrossOriginLogin lets a login started from another origin redirect to the provider. By default, such a login
+// redirects to its return URL without starting the flow.
+func WithCrossOriginLogin(enable bool) Option {
+	return optionFunc(func(c *config) error {
+		c.crossOriginLogin = enable
 		return nil
 	})
 }

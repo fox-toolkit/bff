@@ -42,9 +42,13 @@ type loginState struct {
 	Created int64 `json:"t"`
 }
 
-// LoginHandler returns a handler that starts the authorization code flow with the provider. The optional returnUrl
-// query parameter is a local URL to redirect to after login, "/" by default. The optional prompt query parameter is
-// passed to the provider, such as prompt=none for a silent login.
+// LoginHandler returns a handler that starts the authorization code flow with the provider. The browser must initiate
+// the login flow by navigating to it. After login, the browser is redirected to the local URL in the returnUrl query
+// parameter, or to "/" if it is absent. The optional prompt query parameter is passed to the provider, such as
+// prompt=none for a silent login.
+//
+// A login started from another origin redirects to the return URL without starting the flow, unless
+// [WithCrossOriginLogin] is enabled.
 //
 // When Pushed Authorization Requests (PAR, RFC 9126) are used, each login sends a request to the pushed authorization
 // request endpoint of the provider, so the route should be rate limited. If this request fails, the handler responds
@@ -68,6 +72,11 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		if prompt != "" && !fe.validPrompt(prompt) {
 			fe.logRejected(r, "invalid prompt", nil)
 			badRequest(w)
+			return
+		}
+		if !fe.cfg.crossOriginLogin && crossOrigin(r) {
+			fe.logger.InfoContext(r.Context(), "login from another origin", "path", r.URL.Path)
+			http.Redirect(w, r, returnURL, http.StatusFound)
 			return
 		}
 
@@ -171,6 +180,13 @@ func (fe *Frontend) pushAuthorizationRequest(ctx context.Context, params url.Val
 		return "", errors.New("no request uri")
 	}
 	return res.RequestURI, nil
+}
+
+// crossOrigin reports whether the browser sent the request from another origin, as http.CrossOriginProtection does. A
+// request without Sec-Fetch-Site is accepted.
+func crossOrigin(r *http.Request) bool {
+	site := r.Header.Get("Sec-Fetch-Site")
+	return site != "" && site != "same-origin" && site != "none"
 }
 
 // trimPendingLogins deletes the login cookies of the oldest pending logins, keeping room for a new one.

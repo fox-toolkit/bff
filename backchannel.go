@@ -24,7 +24,7 @@ const (
 var errInvalidLogoutToken = errors.New("invalid logout token")
 
 // BackchannelHandler returns a handler that ends the sessions designated by a logout token, as defined by OpenID
-// Connect Back-Channel Logout. It panics if the frontend has no store.
+// Connect Back-Channel Logout. The provider must call it with a POST request. It panics if the frontend has no store.
 func (fe *Frontend) BackchannelHandler() fox.HandlerFunc {
 	if fe.cfg.store == nil {
 		panic("bff: back-channel logout requires a store")

@@ -142,7 +142,7 @@ func TestNewFrontend(t *testing.T) {
 		{name: "nil log handler", client: func(*Client) {}, opts: []Option{WithLogHandler(nil)}},
 		{name: "dpop algorithm", client: func(c *Client) {
 			c.Provider = newTestProvider(t, map[string]any{"dpop_signing_alg_values_supported": []string{"RS256"}})
-		}, opts: []Option{WithDPoP()}},
+		}, opts: []Option{WithDPoP(true)}},
 		{name: "pushed authorization mode", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(3)}},
 		{name: "pushed authorization without endpoint", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(PushedAuthorizationRequired)}},
 		{name: "pushed authorization disabled but required", client: func(c *Client) {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,41 @@ func TestLoginPushedAuthorizationFailure(t *testing.T) {
 	}
 }
 
+func TestLoginCrossOrigin(t *testing.T) {
+	cases := []struct {
+		site    string
+		allow   bool
+		started bool
+	}{
+		{site: "", started: true},
+		{site: "same-origin", started: true},
+		{site: "none", started: true},
+		{site: "same-site"},
+		{site: "cross-site"},
+		{site: "cross-site", allow: true, started: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.site+" "+strconv.FormatBool(tc.allow), func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{}, WithCrossOriginLogin(tc.allow))
+			req := httptest.NewRequest(http.MethodGet, appOrigin+"/bff/login?returnUrl=/orders", nil)
+			if tc.site != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.site)
+			}
+			rec := httptest.NewRecorder()
+			e.router.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusFound, rec.Code)
+			if tc.started {
+				assert.True(t, strings.HasPrefix(rec.Header().Get("Location"), e.idp.URL))
+				assert.Len(t, rec.Header().Values("Set-Cookie"), 1)
+			} else {
+				assert.Equal(t, "/orders", rec.Header().Get("Location"))
+				assert.Empty(t, rec.Header().Values("Set-Cookie"))
+			}
+		})
+	}
+}
+
 func TestCallback(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
 		var opts []Option
@@ -311,7 +347,7 @@ func TestCallbackInvalid(t *testing.T) {
 }
 
 func TestCallbackUserInfo(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{UserInfo: map[string]any{"email": "alice@example.com"}}, WithUserInfo())
+	e := newTestEnv(t, oidctest.Options{UserInfo: map[string]any{"email": "alice@example.com"}}, WithUserInfo(true))
 	rec := e.login(t, "", nil)
 	require.Equal(t, http.StatusFound, rec.Code)
 	s, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))

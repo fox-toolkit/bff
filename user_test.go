@@ -28,7 +28,7 @@ func TestUserHandler(t *testing.T) {
 		SID:      "s1",
 		Claims:   map[string]any{"name": "Alice", "auth_time": 1_000_000},
 		UserInfo: map[string]any{"email": "alice@example.com", "name": "Alice Liddell"},
-	}, WithUserInfo())
+	}, WithUserInfo(true))
 	e.mountUser(t)
 	cookies := e.loggedIn(t)
 	s, _, err := e.fe.readSession(t.Context(), cookies)

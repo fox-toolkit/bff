@@ -59,12 +59,12 @@ func TestLoginDPoP(t *testing.T) {
 	}{
 		{name: "front channel"},
 		{name: "pushed authorization", opts: oidctest.Options{PAR: true}},
-		{name: "userinfo", fe: []Option{WithUserInfo()}},
+		{name: "userinfo", fe: []Option{WithUserInfo(true)}},
 		{name: "nonce", opts: oidctest.Options{DPoPNonce: "n1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newTestEnv(t, tc.opts, append(tc.fe, WithDPoP())...)
+			e := newTestEnv(t, tc.opts, append(tc.fe, WithDPoP(true))...)
 			rec, callback := e.startLogin(t, "")
 			authorize, err := url.Parse(rec.Header().Get("Location"))
 			require.NoError(t, err)
@@ -87,7 +87,7 @@ func TestLoginDPoP(t *testing.T) {
 }
 
 func TestLoginDPoPNotBound(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{IgnoreDPoP: true}, WithDPoP())
+	e := newTestEnv(t, oidctest.Options{IgnoreDPoP: true}, WithDPoP(true))
 	assert.Equal(t, http.StatusBadGateway, e.login(t, "", nil).Code)
 }
 
@@ -99,7 +99,7 @@ func TestLoginDPoPWithoutKey(t *testing.T) {
 }
 
 func TestRefreshDPoP(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, DPoPNonce: "n1"}, WithDPoP())
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, DPoPNonce: "n1"}, WithDPoP(true))
 	got := e.mount(t, "/api")
 	cookies := e.loggedIn(t)
 	before, _, err := e.fe.readSession(t.Context(), cookies)
@@ -154,7 +154,7 @@ func TestTransportDPoP(t *testing.T) {
 	api := newDPoPAPI(t)
 	target, err := url.Parse(api.URL)
 	require.NoError(t, err)
-	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithDPoP())
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithDPoP(true))
 	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) { pr.SetURL(target) }, Transport: Transport(nil)}
 	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Middleware()))
 	require.NoError(t, err)
@@ -239,7 +239,7 @@ func TestMiddlewareDPoPMismatch(t *testing.T) {
 		t.Run(strconv.FormatBool(dpop), func(t *testing.T) {
 			var opts []Option
 			if dpop {
-				opts = append(opts, WithDPoP())
+				opts = append(opts, WithDPoP(true))
 			}
 			e := newTestEnv(t, oidctest.Options{}, opts...)
 			e.mount(t, "/api")
@@ -262,7 +262,7 @@ func TestTransportDPoPHostHeader(t *testing.T) {
 	api := newDPoPAPI(t)
 	target, err := url.Parse(api.URL)
 	require.NoError(t, err)
-	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithDPoP())
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithDPoP(true))
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = Transport(nil)
 	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Middleware()))
