@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fox-toolkit/bff/internal/oidctest"
 	"github.com/fox-toolkit/bff/store"
@@ -171,4 +172,24 @@ func TestLogoutStoreError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.Empty(t, rec.Header().Values("Set-Cookie"))
 	assert.Empty(t, e.idp.EndSessions())
+}
+
+func TestLogoutForgetsTokens(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing))
+	e.mountLogout(t)
+	errs := make(chan error, 2)
+	e.mountResourceToken(t, "/r1", billing, errs)
+	old := e.loggedIn(t)
+
+	rec := e.do(http.MethodGet, "/r1", old, nil)
+	require.NoError(t, <-errs)
+	latest := requestCookies(t, rec.Header())
+	s, _, err := e.fe.readSession(t.Context(), latest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSeeOther, e.do(http.MethodGet, "/bff/logout?csrf_token="+s.LogoutCSRFToken, latest, nil).Code)
+	refreshes := e.idp.Refreshes()
+
+	e.do(http.MethodGet, "/r1", old, nil)
+	assert.ErrorIs(t, <-errs, ErrNoSession)
+	assert.Equal(t, refreshes, e.idp.Refreshes())
 }

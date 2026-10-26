@@ -156,7 +156,7 @@ func TestTransportDPoP(t *testing.T) {
 	require.NoError(t, err)
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithDPoP(true))
 	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) { pr.SetURL(target) }, Transport: Transport(nil)}
-	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Middleware()))
+	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Authenticate()))
 	require.NoError(t, err)
 	cookies := e.loggedIn(t)
 	s, _, err := e.fe.readSession(t.Context(), cookies)
@@ -265,7 +265,7 @@ func TestTransportDPoPHostHeader(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithDPoP(true))
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = Transport(nil)
-	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Middleware()))
+	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Authenticate()))
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api/orders", e.loggedIn(t), nil).Code)

@@ -48,7 +48,7 @@ func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 		}
 
 		s, st, err := fe.readSession(r.Context(), r.Cookies())
-		if errors.Is(err, errNoSession) {
+		if errors.Is(err, ErrNoSession) {
 			sessionCookie.clear(w.Header(), st.chunks)
 			http.Redirect(w, r, fe.postLogoutURL(), http.StatusSeeOther)
 			return
@@ -80,6 +80,7 @@ func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 			internalError(w)
 			return
 		}
+		fe.tokens.Forget(s.LogoutCSRFToken)
 		if s.RefreshToken != "" {
 			// The session is already deleted, so a failed revocation only leaves the refresh token valid until it expires.
 			_ = fe.revoke(r.Context(), s.RefreshToken)
@@ -138,7 +139,7 @@ func (fe *Frontend) postRevocation(ctx context.Context, refreshToken string) err
 		return err
 	}
 
-	resp, err := fe.provider.client.Do(req)
+	resp, err := fe.provider.client.Do(req) //nolint:gosec // revocation endpoint from the provider metadata, checked by NewProvider
 	if err != nil {
 		return err
 	}

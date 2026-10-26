@@ -91,7 +91,7 @@ func TestEndToEnd(t *testing.T) {
 					{methods: fox.MethodGet, pattern: "/bff/callback", handler: fe.CallbackHandler()},
 					{methods: []string{http.MethodGet, http.MethodPost}, pattern: "/bff/logout", handler: fe.LogoutHandler()},
 					{methods: fox.MethodGet, pattern: "/bff/user", handler: fe.UserHandler()},
-					{methods: fox.MethodAny, pattern: "/api/*{any}", handler: fox.WrapH(proxy), opts: []fox.RouteOption{fox.WithMiddleware(fe.Middleware())}},
+					{methods: fox.MethodAny, pattern: "/api/*{any}", handler: fox.WrapH(proxy), opts: []fox.RouteOption{fox.WithMiddleware(fe.Authenticate())}},
 					{methods: fox.MethodGet, pattern: "/", handler: page},
 					{methods: fox.MethodGet, pattern: "/home", handler: page},
 				}

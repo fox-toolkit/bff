@@ -59,6 +59,8 @@ type Options struct {
 	SID     string
 	// DPoPNonce is the nonce the token endpoint requires in the DPoP proofs, when it is not empty.
 	DPoPNonce string
+	// InvalidTargets are the resources the token endpoint rejects with invalid_target (RFC 8707 2).
+	InvalidTargets []string
 	// AccessTokenTTL is the lifetime of the access tokens. The default is 5 minutes.
 	AccessTokenTTL time.Duration
 	// RotateRefreshTokens issues a new refresh token on every refresh. Reusing a refresh token then revokes every
@@ -96,6 +98,7 @@ type Server struct {
 	assertions  []Assertion
 	requests    []RequestObject
 	opts        Options
+	refreshes   int
 	mu          sync.Mutex
 }
 
@@ -114,7 +117,10 @@ type grant struct {
 	challenge   string
 	subject     string
 	sid         string
-	used        bool
+	resource    string
+	// resources are the resources of the authorization request, and resource the audience of an access token.
+	resources []string
+	used      bool
 }
 
 // NewServer starts a [Server].
@@ -192,6 +198,22 @@ func (s *Server) RequestObjects() []RequestObject {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]RequestObject(nil), s.requests...)
+}
+
+// AccessTokenResource returns the resource of an access token issued by the provider, which is empty for an access
+// token requested without resource.
+func (s *Server) AccessTokenResource(accessToken string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.access[accessToken]
+	return g.resource, ok
+}
+
+// Refreshes returns the number of refresh token grants accepted by the provider.
+func (s *Server) Refreshes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshes
 }
 
 // RotateKey replaces the provider key with a new key, published with a new key ID.
@@ -363,6 +385,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 			dpopJKT:     q.Get("dpop_jkt"),
 			subject:     s.opts.Subject,
 			sid:         s.opts.SID,
+			resources:   q["resource"],
 		}
 		params.Set("code", code)
 	}
@@ -405,6 +428,10 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 			return
 		}
+		if !s.validTarget(r.PostForm, g) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target"})
+			return
+		}
 		g.family = new(false)
 	case "refresh_token":
 		prev, ok := s.refresh[r.PostForm.Get("refresh_token")]
@@ -415,15 +442,21 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 			return
 		}
+		if !s.validTarget(r.PostForm, *prev) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target"})
+			return
+		}
 		if s.opts.RotateRefreshTokens {
 			prev.used = true
 		}
+		s.refreshes++
 		g = *prev
 		g.nonce = ""
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported_grant_type"})
 		return
 	}
+	g.resource = r.PostForm.Get("resource")
 
 	g.jkt = jkt
 	tokenType := "Bearer"
@@ -524,6 +557,14 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// validTarget reports whether the resource of the token request is one of the grant (RFC 8707 2.2). It must be called
+// with the lock held.
+func (s *Server) validTarget(form url.Values, g grant) bool {
+	resource := form.Get("resource")
+	return len(form["resource"]) <= 1 && (resource == "" ||
+		slices.Contains(g.resources, resource) && !slices.Contains(s.opts.InvalidTargets, resource))
+}
+
 func (s *Server) metadataBool(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -583,6 +624,17 @@ func (s *Server) verifyRequestObject(form url.Values, clientID string) (url.Valu
 	for k, v := range claims {
 		switch k {
 		case "iss", "aud", "nbf", "exp", "iat", "jti":
+			continue
+		}
+		// RFC 8707 2.1: several resources are an array of strings, a single one is a string.
+		if values, ok := v.([]any); ok && k == "resource" && len(values) > 1 {
+			for _, value := range values {
+				str, ok := value.(string)
+				if !ok {
+					return nil, errors.New("non string resource")
+				}
+				params.Add(k, str)
+			}
 			continue
 		}
 		str, ok := v.(string)

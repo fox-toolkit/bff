@@ -39,7 +39,7 @@ func (e *testEnv) mount(t *testing.T, pattern string, opts ...fox.RouteOption) *
 		mu.Unlock()
 		c.Writer().WriteHeader(http.StatusOK)
 	}
-	_, err := e.router.Add(fox.MethodAny, pattern, h, append(opts, fox.WithMiddleware(e.fe.Middleware()))...)
+	_, err := e.router.Add(fox.MethodAny, pattern, h, append(opts, fox.WithMiddleware(e.fe.Authenticate()))...)
 	require.NoError(t, err)
 	return &got
 }
@@ -199,7 +199,16 @@ func TestMiddlewareRefresh(t *testing.T) {
 }
 
 func TestMiddlewareRefreshRotation(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, RotateRefreshTokens: true})
+	for _, stateful := range []bool{false, true} {
+		var opts []Option
+		if stateful {
+			opts = append(opts, WithStore(slowStore{&mapStore{records: make(map[string]store.Record)}}))
+		}
+		testMiddlewareRefreshRotation(t, newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, RotateRefreshTokens: true}, opts...))
+	}
+}
+
+func testMiddlewareRefreshRotation(t *testing.T, e *testEnv) {
 	got := e.mount(t, "/api")
 	cookies := e.loggedIn(t)
 	e.skipAhead(20 * time.Second)
@@ -272,7 +281,7 @@ func TestMiddlewareResponseCookies(t *testing.T) {
 		c.Writer().Header().Add("Set-Cookie", "__Host-bff-login-x.0=evil; Path=/")
 		c.Writer().Header().Add("Set-Cookie", "other=1")
 		_, _ = c.Writer().WriteString("ok")
-	}, fox.WithMiddleware(e.fe.Middleware()))
+	}, fox.WithMiddleware(e.fe.Authenticate()))
 	require.NoError(t, err)
 
 	cookies := e.loggedIn(t)
@@ -298,7 +307,8 @@ func TestRemoveOwnCookies(t *testing.T) {
 
 type deletingStore struct {
 	*mapStore
-	deleteOnLoad bool
+	deleteOnLoad   bool
+	deleteOnUpdate bool
 }
 
 func (s *deletingStore) Load(ctx context.Context, id string) (store.Record, error) {
@@ -309,18 +319,73 @@ func (s *deletingStore) Load(ctx context.Context, id string) (store.Record, erro
 	return r, err
 }
 
+func (s *deletingStore) Update(ctx context.Context, id string, r store.Record) error {
+	if s.deleteOnUpdate {
+		delete(s.records, id)
+	}
+	return s.mapStore.Update(ctx, id, r)
+}
+
 func TestMiddlewareSessionEndedDuringRequest(t *testing.T) {
-	ds := &deletingStore{mapStore: &mapStore{records: make(map[string]store.Record)}}
-	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second}, WithStore(ds))
-	got := e.mount(t, "/api")
+	cases := []struct {
+		name           string
+		deleteOnLoad   bool
+		deleteOnUpdate bool
+		revoked        int
+	}{
+		{name: "before the refresh", deleteOnLoad: true},
+		{name: "after the refresh", deleteOnUpdate: true, revoked: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := &deletingStore{mapStore: &mapStore{records: make(map[string]store.Record)}}
+			e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second}, WithStore(ds))
+			got := e.mount(t, "/api")
+			cookies := e.loggedIn(t)
+			e.skipAhead(20 * time.Second)
+
+			ds.deleteOnLoad, ds.deleteOnUpdate = tc.deleteOnLoad, tc.deleteOnUpdate
+			rec := e.do(http.MethodGet, "/api", cookies, nil)
+			assert.Equal(t, http.StatusUnauthorized, rec.Code)
+			assert.Len(t, sessionCookieLines(rec.Header()), 1)
+			assert.Empty(t, ds.records)
+			assert.Empty(t, *got)
+			assert.Len(t, e.idp.Revoked(), tc.revoked)
+			assert.Equal(t, tc.revoked, e.idp.Refreshes())
+		})
+	}
+}
+
+func TestMiddlewareRefreshCanceledRequest(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, RotateRefreshTokens: true}, WithStore(ctxStore{&mapStore{records: make(map[string]store.Record)}}))
+	e.mount(t, "/api")
 	cookies := e.loggedIn(t)
 	e.skipAhead(20 * time.Second)
 
-	ds.deleteOnLoad = true
+	e.doContext(e.cancelOnRefresh(t), "/api", cookies)
+	s, _, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+	e.fe.tokens.Forget(s.LogoutCSRFToken)
+
+	e.skipAhead(50 * time.Second)
+	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
+}
+
+func TestMiddlewareRefreshBearerUnderDPoP(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 2 * time.Second, RotateRefreshTokens: true}, WithDPoP(true))
+	e.mount(t, "/api")
+	cookies := e.loggedIn(t)
+
+	e.idp.Update(func(o *oidctest.Options) { o.IgnoreDPoP = true })
+	time.Sleep(2 * time.Second)
 	rec := e.do(http.MethodGet, "/api", cookies, nil)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Len(t, sessionCookieLines(rec.Header()), 1)
-	assert.Empty(t, ds.records)
-	assert.Empty(t, *got)
-	assert.Len(t, e.idp.Revoked(), 1)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	cookies = requestCookies(t, rec.Header())
+	require.NotEmpty(t, cookies)
+
+	s, _, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+	e.fe.tokens.Forget(s.LogoutCSRFToken)
+	e.idp.Update(func(o *oidctest.Options) { o.IgnoreDPoP = false })
+	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
 }

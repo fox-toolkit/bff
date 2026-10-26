@@ -36,6 +36,14 @@ func TestMemoryStore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("y"), got.Data)
 
+	r.Generation = 2
+	require.NoError(t, s.Update(ctx, "a", r))
+	assert.ErrorIs(t, s.Update(ctx, "a", store.Record{Expires: r.Expires, Generation: 1}), store.ErrConflict)
+	require.NoError(t, s.Update(ctx, "a", r))
+	got, err = s.Load(ctx, "a")
+	require.NoError(t, err)
+	assert.Equal(t, r, got)
+
 	require.NoError(t, s.Delete(ctx, "a"))
 	_, err = s.Load(ctx, "a")
 	assert.ErrorIs(t, err, store.ErrNotFound)

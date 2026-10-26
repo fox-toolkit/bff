@@ -76,7 +76,7 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		}
 		if !fe.cfg.crossOriginLogin && crossOrigin(r) {
 			fe.logger.InfoContext(r.Context(), "login from another origin", "path", r.URL.Path)
-			http.Redirect(w, r, returnURL, http.StatusFound)
+			http.Redirect(w, r, returnURL, http.StatusFound) //nolint:gosec // checked by localURL
 			return
 		}
 
@@ -99,6 +99,11 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		}
 		if prompt != "" {
 			params.Set("prompt", prompt)
+		}
+		if len(fe.cfg.resources) > 0 {
+			// RFC 8707 2.1: the resources apply to the full grant, so their access tokens are requested with the
+			// refresh token.
+			params["resource"] = slices.Clone(fe.cfg.resources)
 		}
 		if fe.cfg.dpop {
 			key, raw, err := newDPoPKey()
@@ -299,6 +304,9 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 				internalError(w)
 				return
 			}
+		}
+		if len(fe.cfg.resources) > 0 && s.RefreshToken == "" {
+			fe.logger.WarnContext(r.Context(), "resources declared but no refresh token", "path", r.URL.Path)
 		}
 		if err := fe.writeSession(r.Context(), h, s, sessionState{chunks: prev.chunks}); err != nil {
 			fe.logFailed(r, "session store", err)

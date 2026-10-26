@@ -6,7 +6,9 @@ package bff
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/fox-toolkit/bff/store/memory"
 	"github.com/fox-toolkit/fox"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 func BenchmarkMiddleware(b *testing.B) {
@@ -28,7 +31,7 @@ func BenchmarkMiddleware(b *testing.B) {
 			e := newTestEnv(b, oidctest.Options{AccessTokenTTL: 24 * time.Hour}, opts...)
 			_, err := e.router.Add(fox.MethodGet, "/api", func(c *fox.Context) {
 				c.Writer().WriteHeader(http.StatusOK)
-			}, fox.WithMiddleware(e.fe.Middleware()))
+			}, fox.WithMiddleware(e.fe.Authenticate()))
 			require.NoError(b, err)
 
 			req, err := http.NewRequest(http.MethodGet, appOrigin+"/api", nil)
@@ -40,6 +43,28 @@ func BenchmarkMiddleware(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				e.router.ServeHTTP(new(discardWriter), req)
+			}
+		})
+	}
+}
+
+func BenchmarkWriteSession(b *testing.B) {
+	resources := []string{"https://a.example.com/", "https://b.example.com/", "https://c.example.com/"}
+	for _, n := range []int{0, len(resources)} {
+		b.Run(fmt.Sprintf("%d resources", n), func(b *testing.B) {
+			fe := newTestFrontend(b, WithResources(resources...))
+			s := testSession()
+			for _, resource := range resources[:n] {
+				s.setResourceToken(resource, &oauth2.Token{
+					AccessToken: strings.Repeat("a", 1000),
+					Expiry:      time.Now().Add(time.Hour),
+				}, time.Now())
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := fe.writeSession(b.Context(), make(http.Header), s, sessionState{}); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

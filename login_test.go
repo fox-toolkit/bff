@@ -249,7 +249,7 @@ func TestCallbackReplacesSession(t *testing.T) {
 	assert.Len(t, ms.records, 1)
 
 	_, _, err := e.fe.readSession(t.Context(), first)
-	assert.ErrorIs(t, err, errNoSession)
+	assert.ErrorIs(t, err, ErrNoSession)
 	_, _, err = e.fe.readSession(t.Context(), requestCookies(t, second.Header()))
 	assert.NoError(t, err)
 }
@@ -507,4 +507,12 @@ func applySetCookies(t *testing.T, cookies []*http.Cookie, h http.Header) []*htt
 		}
 	}
 	return out
+}
+
+func TestLoginResources(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{}, WithResources(billing, orders))
+	rec, _ := e.startLogin(t, "")
+	authorize, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{billing, orders}, authorize.Query()["resource"])
 }

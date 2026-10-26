@@ -24,7 +24,7 @@ type nopAEAD struct{}
 func (nopAEAD) Encrypt(plaintext, _ []byte) ([]byte, error)  { return plaintext, nil }
 func (nopAEAD) Decrypt(ciphertext, _ []byte) ([]byte, error) { return ciphertext, nil }
 
-func newTestProvider(t *testing.T, metadata map[string]any) *Provider {
+func newTestProvider(t testing.TB, metadata map[string]any) *Provider {
 	t.Helper()
 	srv := oidctest.NewServer(oidctest.Options{Metadata: metadata})
 	t.Cleanup(srv.Close)
@@ -249,5 +249,21 @@ func TestNewFrontendRequestObject(t *testing.T) {
 			assert.Equal(t, tc.alg, fe.requestObjectAlg)
 			assert.Equal(t, tc.authAlg, fe.auth.alg)
 		})
+	}
+}
+
+func TestWithResources(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{},
+		WithResources(billing, "https://api.example.com/app/?tenant=1"),
+		WithResources(),
+		WithResources(orders, billing),
+		WithSigningAlgorithms("RS256"),
+		WithSigningAlgorithms("PS256", "RS256"),
+	)
+	assert.Equal(t, []string{billing, "https://api.example.com/app/?tenant=1", orders}, e.fe.cfg.resources)
+	assert.Equal(t, []string{"RS256", "PS256"}, e.fe.cfg.signingAlgs)
+
+	for _, resource := range []string{"/api", "https://api.example.com/#x", "https://api.example.com/#", "https://[::1", ""} {
+		assert.ErrorIs(t, WithResources(resource).apply(defaultConfig()), ErrInvalidConfig, resource)
 	}
 }

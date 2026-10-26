@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-var ErrNotFound = errors.New("session not found")
+var (
+	ErrNotFound = errors.New("session not found")
+	ErrConflict = errors.New("session changed")
+)
 
 // Record is a session kept by a [Store].
 type Record struct {
@@ -25,6 +28,9 @@ type Record struct {
 	SID string
 	// Data is the session, encrypted by the frontend.
 	Data []byte
+	// Generation counts the changes of the session tokens. A record never replaces a record with a greater
+	// generation.
+	Generation int64
 }
 
 // Store keeps the sessions of stateful frontends. A Store must be safe for concurrent use.
@@ -34,7 +40,7 @@ type Store interface {
 	// Create stores the record of a new session.
 	Create(ctx context.Context, id string, r Record) error
 	// Update replaces the record of an existing session, or returns [ErrNotFound] if it does not exist or has
-	// expired.
+	// expired. It returns [ErrConflict] without replacing the record if the stored record has a greater generation.
 	Update(ctx context.Context, id string, r Record) error
 	// Delete deletes the session. Deleting a session that does not exist is not an error.
 	Delete(ctx context.Context, id string) error

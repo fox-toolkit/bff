@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestFrontend(t *testing.T, opts ...Option) *Frontend {
+func newTestFrontend(t testing.TB, opts ...Option) *Frontend {
 	t.Helper()
 	fe, err := NewFrontend(Client{
 		Provider:     newTestProvider(t, nil),
@@ -58,9 +59,12 @@ func TestSessionStateless(t *testing.T) {
 
 type mapStore struct {
 	records map[string]store.Record
+	mu      sync.Mutex
 }
 
 func (s *mapStore) Load(_ context.Context, id string) (store.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	r, ok := s.records[id]
 	if !ok {
 		return store.Record{}, store.ErrNotFound
@@ -69,24 +73,36 @@ func (s *mapStore) Load(_ context.Context, id string) (store.Record, error) {
 }
 
 func (s *mapStore) Create(_ context.Context, id string, r store.Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.records[id] = r
 	return nil
 }
 
 func (s *mapStore) Update(_ context.Context, id string, r store.Record) error {
-	if _, ok := s.records[id]; !ok {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, ok := s.records[id]
+	if !ok {
 		return store.ErrNotFound
+	}
+	if prev.Generation > r.Generation {
+		return store.ErrConflict
 	}
 	s.records[id] = r
 	return nil
 }
 
 func (s *mapStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.records, id)
 	return nil
 }
 
 func (s *mapStore) DeleteBy(_ context.Context, partition, subject, sid string) (map[string]store.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	deleted := make(map[string]store.Record)
 	for k, r := range s.records {
 		if r.Partition == partition && (subject == "" || r.Subject == subject) && (sid == "" || r.SID == sid) {
@@ -147,7 +163,7 @@ func TestSessionStateful(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, ms.Update(ctx, other.id, r))
 		_, _, err = fe.readSession(ctx, requestCookies(t, h))
-		assert.ErrorIs(t, err, errNoSession)
+		assert.ErrorIs(t, err, ErrNoSession)
 	})
 
 	t.Run("deleted", func(t *testing.T) {
@@ -155,7 +171,7 @@ func TestSessionStateful(t *testing.T) {
 		require.NoError(t, fe.deleteSession(ctx, h, st))
 		assert.Len(t, h.Values("Set-Cookie"), 1)
 		_, st, err := fe.readSession(ctx, cookies)
-		assert.ErrorIs(t, err, errNoSession)
+		assert.ErrorIs(t, err, ErrNoSession)
 		assert.Equal(t, 1, st.chunks)
 	})
 }
@@ -169,7 +185,7 @@ func TestSessionVersion(t *testing.T) {
 	h := make(http.Header)
 	require.NoError(t, sessionCookie.write(h, fe.aead, data, 0, 0))
 	_, _, err = fe.readSession(t.Context(), requestCookies(t, h))
-	assert.ErrorIs(t, err, errNoSession)
+	assert.ErrorIs(t, err, ErrNoSession)
 }
 
 func TestSessionExpires(t *testing.T) {
@@ -219,5 +235,32 @@ func TestSessionBoundToFrontend(t *testing.T) {
 	_, _, err = e.fe.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 	_, _, err = admin.readSession(t.Context(), cookies)
-	assert.ErrorIs(t, err, errNoSession)
+	assert.ErrorIs(t, err, ErrNoSession)
+}
+
+// slowStore stores the sessions late, so a concurrent request reads the session before it is stored.
+type slowStore struct {
+	*mapStore
+}
+
+func (s slowStore) Update(ctx context.Context, id string, r store.Record) error {
+	time.Sleep(20 * time.Millisecond)
+	return s.mapStore.Update(ctx, id, r)
+}
+
+func TestSessionPrune(t *testing.T) {
+	fe := newTestFrontend(t, WithResources(billing, orders))
+	now := fe.now()
+	s := testSession()
+	s.Resources = map[string]resourceToken{
+		billing:                       {AccessToken: "expired", Expiry: now.Add(-time.Second).Unix()},
+		orders:                        {AccessToken: "valid", Expiry: now.Add(time.Hour).Unix()},
+		"https://removed.example.com": {AccessToken: "removed"},
+	}
+
+	h := make(http.Header)
+	require.NoError(t, fe.writeSession(t.Context(), h, s, sessionState{}))
+	got, _, err := fe.readSession(t.Context(), requestCookies(t, h))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]resourceToken{orders: s.Resources[orders]}, got.Resources)
 }

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -45,6 +47,7 @@ type config struct {
 	csrfHeader       string
 	csrfValue        string
 	signingAlgs      []string
+	resources        []string
 	idleTimeout      time.Duration
 	absoluteTimeout  time.Duration
 	userInfo         bool
@@ -127,8 +130,8 @@ func WithDPoP(enable bool) Option {
 }
 
 // WithSigningAlgorithms restricts the algorithms accepted for the signature of the ID tokens and logout tokens. They
-// should include the algorithm registered for the client at the provider. By default, the algorithms advertised by the
-// provider are accepted.
+// should include the algorithm registered for the client at the provider. Each call adds to the algorithms of the
+// previous ones. By default, the algorithms advertised by the provider are accepted.
 func WithSigningAlgorithms(algs ...string) Option {
 	return optionFunc(func(c *config) error {
 		for _, alg := range algs {
@@ -136,9 +139,35 @@ func WithSigningAlgorithms(algs ...string) Option {
 				return fmt.Errorf("%w: unsupported signing algorithm %q", ErrInvalidConfig, alg)
 			}
 		}
-		c.signingAlgs = slices.Clone(algs)
+		c.signingAlgs = appendUnique(c.signingAlgs, algs...)
 		return nil
 	})
+}
+
+// WithResources declares the protected resources the frontend requests access tokens for, as defined by RFC 8707.
+// Each resource is an absolute URI without fragment, usually the base URI of an API. The resources are requested at
+// login, and the access token of a resource is obtained with [ResourceTransport] or [ResourceAccessToken]. Each call
+// adds to the resources of the previous ones.
+func WithResources(resources ...string) Option {
+	return optionFunc(func(c *config) error {
+		for _, resource := range resources {
+			u, err := url.Parse(resource)
+			if err != nil || !u.IsAbs() || strings.Contains(resource, "#") {
+				return fmt.Errorf("%w: invalid resource %q", ErrInvalidConfig, resource)
+			}
+		}
+		c.resources = appendUnique(c.resources, resources...)
+		return nil
+	})
+}
+
+func appendUnique(s []string, values ...string) []string {
+	for _, v := range values {
+		if !slices.Contains(s, v) {
+			s = append(s, v)
+		}
+	}
+	return s
 }
 
 var signingAlgs = []string{
@@ -195,7 +224,7 @@ func WithRequestObject(enable bool) Option {
 	})
 }
 
-// WithCSRFHeader requires the header with the given value on the requests handled by [Frontend.Middleware] and
+// WithCSRFHeader requires the header with the given value on the requests handled by [Frontend.Authenticate] and
 // [Frontend.UserHandler].
 func WithCSRFHeader(name, value string) Option {
 	return optionFunc(func(c *config) error {

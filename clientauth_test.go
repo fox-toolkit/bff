@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fox-toolkit/bff/internal/oidctest"
+	"github.com/fox-toolkit/fox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -167,6 +168,42 @@ func TestRequestObject(t *testing.T) {
 			assert.Equal(t, "app", claims["client_id"])
 			assert.NotEmpty(t, claims["dpop_jkt"])
 			assert.InDelta(t, 60, claims["exp"].(float64)-claims["nbf"].(float64), 0)
+		})
+	}
+}
+
+func TestRequestObjectResources(t *testing.T) {
+	keys := generateKeys(t)
+	cases := []struct {
+		want      any
+		name      string
+		resources []string
+	}{
+		{name: "one resource", resources: []string{billing}, want: billing},
+		{name: "several resources", resources: []string{billing, orders}, want: []any{billing, orders}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := oidctest.Options{
+				PAR:       true,
+				ClientKey: keys["ec"].Public(),
+				Metadata:  map[string]any{"token_endpoint_auth_methods_supported": bothMethods},
+			}
+			e := newTestEnvWithClient(t, opts, func(c *Client) {
+				c.ClientSecret, c.ClientKey = "", keys["ec"]
+			}, WithRequestObject(true), WithResources(tc.resources...))
+			e.mountHandler(t, "/api", func(c *fox.Context) {
+				for _, resource := range tc.resources {
+					_, err := ResourceAccessToken(c.Request().Context(), resource)
+					assert.NoError(t, err)
+				}
+			})
+			cookies := e.loggedIn(t)
+
+			objects := e.idp.RequestObjects()
+			require.Len(t, objects, 1)
+			assert.Equal(t, tc.want, objects[0].Claims["resource"])
+			assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
 		})
 	}
 }

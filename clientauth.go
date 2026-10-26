@@ -152,7 +152,7 @@ func (a *clientAuth) assertionForm(form url.Values, now time.Time) (string, erro
 }
 
 func newFormRequest(ctx context.Context, endpoint, body string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body)) //nolint:gosec // endpoint from the provider metadata, checked by NewProvider
 	if err != nil {
 		return nil, err
 	}
@@ -184,8 +184,13 @@ func (a *clientAuth) assertion(now time.Time) (string, error) {
 // claims required by the FAPI 2.0 Message Signing profile.
 func (a *clientAuth) requestObject(params url.Values, alg string, now time.Time) (string, error) {
 	claims := make(map[string]any, len(params)+4)
-	for k := range params {
-		claims[k] = params.Get(k)
+	for k, v := range params {
+		// RFC 8707 2.1: several resources are an array of strings.
+		if len(v) > 1 {
+			claims[k] = v
+		} else {
+			claims[k] = params.Get(k)
+		}
 	}
 	claims["iss"] = a.id
 	claims["aud"] = a.audience

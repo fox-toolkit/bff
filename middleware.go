@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fox-toolkit/fox"
@@ -25,22 +26,46 @@ type (
 	sessionKey   struct{}
 )
 
-// AllowAnonymous returns a route option that lets the requests without a session through [Frontend.Middleware]. These
+// AllowAnonymous returns a route option that lets the requests without a session through [Frontend.Authenticate]. These
 // requests have no access token.
 func AllowAnonymous() fox.RouteOption {
 	return fox.WithAnnotation(anonymousKey{}, true)
 }
 
-// requestState is attached to the request context by the middleware. A nil session is an anonymous request.
+// requestState is attached to the request context by the middleware. A nil session is an anonymous request. The
+// session is changed when the access token of a resource is requested, so it is read and changed with mu.
 type requestState struct {
+	fe      *Frontend
+	c       *fox.Context
 	session *session
+	// request is the request handled by the middleware.
+	request *http.Request
+	st      sessionState
+	cookies pendingCookies
+	mu      sync.Mutex
+	// anonymous reports whether the route lets the requests without session through. The route is read by the
+	// middleware, since c is only valid while the handler runs.
+	anonymous bool
 }
 
-// Middleware returns a middleware that authenticates the requests with the session cookie. It rejects cross-origin
+// pendingCookies are the Set-Cookie lines the middleware adds to the response when its header is written.
+type pendingCookies struct {
+	lines []string
+	mu    sync.Mutex
+	sent  bool
+}
+
+func (c *pendingCookies) started() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sent
+}
+
+// Authenticate returns a middleware that authenticates the requests with the session cookie. It rejects cross-origin
 // requests, refreshes the access token before it expires, and makes it available with [AccessToken]. Requests without a
 // valid session are handled by the unauthorized handler, unless the route has [AllowAnonymous]. The session cookies are
 // removed from the request passed to the next handler and from its response.
-func (fe *Frontend) Middleware() fox.MiddlewareFunc {
+func (fe *Frontend) Authenticate() fox.MiddlewareFunc {
 	return func(next fox.HandlerFunc) fox.HandlerFunc {
 		return func(c *fox.Context) {
 			fe.serve(c, next)
@@ -57,31 +82,47 @@ func (fe *Frontend) serve(c *fox.Context, next fox.HandlerFunc) {
 	}
 
 	pending := make(http.Header)
-	s, err := fe.currentSession(r, pending)
+	s, st, err := fe.currentSession(r, pending)
 	if err != nil {
+		addSetCookies(c.Writer().Header(), pending)
 		fe.sessionError(c.Writer(), r, err)
 		return
 	}
-	if s == nil {
-		if route := c.Route(); route == nil || route.Annotation(anonymousKey{}) == nil {
-			for _, line := range pending.Values("Set-Cookie") {
-				c.Writer().Header().Add("Set-Cookie", line)
-			}
-			fe.cfg.unauthorized(c)
-			return
-		}
+	if s == nil && !allowAnonymous(c) {
+		addSetCookies(c.Writer().Header(), pending)
+		fe.cfg.unauthorized(c)
+		return
 	}
 
-	req := r.WithContext(context.WithValue(r.Context(), sessionKey{}, &requestState{session: s}))
+	rs := &requestState{fe: fe, c: c, session: s, request: r, st: st, anonymous: allowAnonymous(c)}
+	rs.cookies.lines = pending["Set-Cookie"]
+	req := r.WithContext(context.WithValue(r.Context(), sessionKey{}, rs))
 	req.Header = r.Header.Clone()
 	removeOwnCookies(req.Header)
-	w := &cookieWriter{ResponseWriter: c.Writer(), cookies: pending.Values("Set-Cookie")}
+	w := &cookieWriter{ResponseWriter: c.Writer(), cookies: &rs.cookies}
 	c.SetRequest(req)
 	c.SetWriter(w)
 	next(c)
 	w.commit()
 	c.SetWriter(w.ResponseWriter)
 	c.SetRequest(r)
+}
+
+// Unauthorized responds with the unauthorized handler of the frontend, such as in a handler when [ResourceAccessToken]
+// returns [ErrNoSession].
+func (fe *Frontend) Unauthorized(c *fox.Context) {
+	fe.cfg.unauthorized(c)
+}
+
+func allowAnonymous(c *fox.Context) bool {
+	route := c.Route()
+	return route != nil && route.Annotation(anonymousKey{}) != nil
+}
+
+func addSetCookies(dst, src http.Header) {
+	for _, line := range src.Values("Set-Cookie") {
+		dst.Add("Set-Cookie", line)
+	}
 }
 
 var errCSRFHeader = errors.New("missing or invalid csrf header")
@@ -107,31 +148,32 @@ func (fe *Frontend) sessionError(w http.ResponseWriter, r *http.Request, err err
 	internalError(w)
 }
 
-// currentSession returns the valid session of the request, or nil. The cookies to set on the response are added to h.
-func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, error) {
+// currentSession returns the valid session of the request with the state of its cookie, or nil. The cookies to set on
+// the response are added to h.
+func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, sessionState, error) {
 	ctx := r.Context()
 	s, st, err := fe.readSession(ctx, r.Cookies())
-	if errors.Is(err, errNoSession) {
+	if errors.Is(err, ErrNoSession) {
 		if st.chunks > 0 {
 			fe.logger.InfoContext(ctx, "invalid or ended session", "path", r.URL.Path)
 		}
 		sessionCookie.clear(h, st.chunks)
-		return nil, nil
+		return nil, st, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, st, err
 	}
 
 	now := fe.now()
 	if !now.Before(s.expires(fe.cfg)) {
-		return nil, fe.deleteSession(ctx, h, st)
+		return nil, st, fe.deleteSession(ctx, h, st)
 	}
 	if (s.DPoPKey != nil) != fe.cfg.dpop {
 		fe.logger.InfoContext(ctx, "session ended by a dpop configuration change", "path", r.URL.Path)
 		if s.RefreshToken != "" {
 			_ = fe.revoke(ctx, s.RefreshToken)
 		}
-		return nil, fe.deleteSession(ctx, h, st)
+		return nil, st, fe.deleteSession(ctx, h, st)
 	}
 
 	// The idle timeout slides by steps of half its duration, so a session is not rewritten on every request.
@@ -142,44 +184,59 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, er
 	}
 
 	refreshed := false
-	if s.Expiry != 0 && !now.Add(s.refreshSkew()).Before(time.Unix(s.Expiry, 0)) {
+	writeCtx := ctx
+	var failed error
+	if s.stale(now) {
 		expired := !now.Before(time.Unix(s.Expiry, 0))
-		switch err := fe.refreshToken(ctx, s); {
-		case err == nil:
-			dirty, refreshed = true, true
-		case errors.Is(err, errSessionEnded) || expired && s.RefreshToken == "":
+		var tr tokenRequest
+		defer tr.stop()
+		changed, err := fe.refreshToken(ctx, s, st, &tr)
+		if errors.Is(err, errSessionEnded) || err != nil && expired && s.RefreshToken == "" {
 			fe.logger.InfoContext(ctx, "session ended", "path", r.URL.Path, "error", err)
-			return nil, fe.deleteSession(ctx, h, st)
-		case expired:
-			return nil, fmt.Errorf("%w: %w", errProvider, err)
+			fe.tokens.Forget(s.LogoutCSRFToken)
+			return nil, st, fe.deleteSession(ctx, h, st)
+		}
+		if changed {
+			dirty, refreshed, writeCtx = true, true, tr.ctx
+		}
+		// A failed refresh can still replace the refresh token, so the session is saved before the error is returned.
+		if err != nil && expired {
+			failed = err
 		}
 	}
 
 	if dirty {
-		err := fe.writeSession(ctx, h, s, st)
-		if errors.Is(err, errNoSession) {
+		err := fe.writeSession(writeCtx, h, s, st)
+		if errors.Is(err, ErrNoSession) {
 			// The session was ended by another request, such as a back-channel logout, while this one was running.
 			fe.logger.InfoContext(ctx, "session ended during the request", "path", r.URL.Path)
 			sessionCookie.clear(h, st.chunks)
 			if refreshed {
 				_ = fe.revoke(ctx, s.RefreshToken)
 			}
-			return nil, nil
+			return nil, st, nil
 		}
 		if err != nil {
-			return nil, err
+			return nil, st, err
 		}
 	}
-	return s, nil
+	switch {
+	case failed == nil:
+		return s, st, nil
+	case errors.Is(failed, errStore):
+		return nil, st, failed
+	default:
+		return nil, st, fmt.Errorf("%w: %w", errProvider, failed)
+	}
 }
 
 var errNoRefreshToken = errors.New("no refresh token")
 
-func (fe *Frontend) refreshToken(ctx context.Context, s *session) error {
+func (fe *Frontend) refreshToken(ctx context.Context, s *session, st sessionState, tr *tokenRequest) (bool, error) {
 	if s.RefreshToken == "" {
-		return errNoRefreshToken
+		return false, errNoRefreshToken
 	}
-	return fe.refresh(ctx, s)
+	return fe.refresh(ctx, s, st, tr)
 }
 
 func isOwnCookie(name string) bool {
@@ -215,7 +272,7 @@ func removeOwnCookies(h http.Header) {
 // when the header is written.
 type cookieWriter struct {
 	fox.ResponseWriter
-	cookies []string
+	cookies *pendingCookies
 	done    bool
 }
 
@@ -225,9 +282,13 @@ func (w *cookieWriter) commit() {
 	}
 	w.done = true
 	w.removeOwnCookies()
-	if len(w.cookies) > 0 {
+	w.cookies.mu.Lock()
+	w.cookies.sent = true
+	lines := w.cookies.lines
+	w.cookies.mu.Unlock()
+	if len(lines) > 0 {
 		h := w.Header()
-		h["Set-Cookie"] = append(h["Set-Cookie"], w.cookies...)
+		h["Set-Cookie"] = append(h["Set-Cookie"], lines...)
 	}
 }
 
@@ -237,6 +298,15 @@ func (w *cookieWriter) removeOwnCookies() {
 
 // removeOwnSetCookies removes the Set-Cookie lines of the BFF cookies from h.
 func removeOwnSetCookies(h http.Header) {
+	removeSetCookies(h, isOwnCookie)
+}
+
+// removeSessionSetCookies removes the Set-Cookie lines of the session cookie from h.
+func removeSessionSetCookies(h http.Header) {
+	removeSetCookies(h, func(name string) bool { return strings.HasPrefix(name, sessionCookie.name+".") })
+}
+
+func removeSetCookies(h http.Header, remove func(name string) bool) {
 	lines := h["Set-Cookie"]
 	if len(lines) == 0 {
 		return
@@ -244,7 +314,7 @@ func removeOwnSetCookies(h http.Header) {
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
 		name, _, _ := strings.Cut(line, "=")
-		if !isOwnCookie(name) {
+		if !remove(name) {
 			kept = append(kept, line)
 		}
 	}

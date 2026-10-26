@@ -61,8 +61,12 @@ func (s *Store) Create(_ context.Context, id string, r store.Record) error {
 func (s *Store) Update(_ context.Context, id string, r store.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if prev, ok := s.records[id]; !ok || !s.now().Before(prev.Expires) {
+	prev, ok := s.records[id]
+	if !ok || !s.now().Before(prev.Expires) {
 		return store.ErrNotFound
+	}
+	if prev.Generation > r.Generation {
+		return store.ErrConflict
 	}
 	s.records[id] = r
 	return nil

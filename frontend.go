@@ -28,7 +28,7 @@ type Frontend struct {
 	logoutVerifier        *oidc.IDTokenVerifier
 	now                   func() time.Time
 	cop                   *http.CrossOriginProtection
-	refreshGroup          *refreshGroup
+	tokens                *tokenGroup
 	logger                *slog.Logger
 	postLogoutRedirectURL string
 	parEndpoint           string
@@ -136,7 +136,7 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		logger:                slog.New(cfg.logHandler).With("client_id", client.ClientID),
 		partition:             partition,
 	}
-	fe.refreshGroup = newRefreshGroup(func() time.Time { return fe.now() })
+	fe.tokens = newTokenGroup(func() time.Time { return fe.now() })
 	return fe, nil
 }
 

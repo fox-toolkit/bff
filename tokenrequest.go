@@ -38,7 +38,7 @@ func (fe *Frontend) requestToken(ctx context.Context, client *http.Client, form 
 	if err != nil {
 		return nil, err
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // token endpoint from the provider metadata, checked by NewProvider
 	if err != nil {
 		return nil, err
 	}
