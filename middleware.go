@@ -170,10 +170,7 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, se
 	}
 	if (s.DPoPKey != nil) != fe.cfg.dpop {
 		fe.logger.InfoContext(ctx, "session ended by a dpop configuration change", "path", r.URL.Path)
-		if s.RefreshToken != "" {
-			_ = fe.revoke(ctx, s.RefreshToken)
-		}
-		return nil, st, fe.deleteSession(ctx, h, st)
+		return nil, st, fe.endSession(ctx, h, s, st)
 	}
 
 	// The idle timeout slides by steps of half its duration, so a session is not rewritten on every request.

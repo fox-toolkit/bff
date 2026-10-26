@@ -5,12 +5,17 @@
 package bff
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,19 +86,21 @@ func TestLogoutMethods(t *testing.T) {
 		{name: "get with token", method: http.MethodGet, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusSeeOther},
 		{name: "get without token", method: http.MethodGet, code: http.StatusBadRequest},
 		{name: "get with wrong token", method: http.MethodGet, query: func(string) string { return "csrf_token=x" }, code: http.StatusBadRequest},
+		{name: "get with token and malformed query", method: http.MethodGet, query: func(tk string) string { return "csrf_token=" + tk + "&utm=a;b" }, code: http.StatusSeeOther},
 		{name: "form post with token", method: http.MethodPost, form: func(tk string) url.Values { return url.Values{"csrf_token": {tk}} }, code: http.StatusSeeOther},
 		{name: "same-origin post with token", method: http.MethodPost, header: sameOrigin, form: func(tk string) url.Values { return url.Values{"csrf_token": {tk}} }, code: http.StatusSeeOther},
 		{name: "post without token", method: http.MethodPost, header: sameOrigin, code: http.StatusBadRequest},
-		{name: "post with token in query", method: http.MethodPost, header: sameOrigin, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusBadRequest},
+		{name: "post with token in query", method: http.MethodPost, header: sameOrigin, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusSeeOther},
+		{name: "post with wrong token in body and token in query", method: http.MethodPost, header: sameOrigin, query: func(tk string) string { return "csrf_token=" + tk }, form: func(string) url.Values { return url.Values{"csrf_token": {"x"}} }, code: http.StatusBadRequest},
+		{name: "cross-site post with token in query", method: http.MethodPost, header: crossSite, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusForbidden},
 		{name: "post with oversized body", method: http.MethodPost, form: func(tk string) url.Values {
 			return url.Values{"csrf_token": {tk}, "pad": {strings.Repeat("a", maxLogoutBody)}}
 		}, code: http.StatusBadRequest},
 		{name: "cross-site post with token", method: http.MethodPost, header: crossSite, form: func(tk string) url.Values { return url.Values{"csrf_token": {tk}} }, code: http.StatusForbidden},
-		{name: "head", method: http.MethodHead, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusMethodNotAllowed},
-		{name: "options", method: http.MethodOptions, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusMethodNotAllowed},
-		{name: "put", method: http.MethodPut, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusMethodNotAllowed},
-		{name: "delete", method: http.MethodDelete, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusMethodNotAllowed},
-		{name: "query", method: "QUERY", query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusMethodNotAllowed},
+		{name: "head with token in query", method: http.MethodHead, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusSeeOther},
+		{name: "options with token in query", method: http.MethodOptions, query: func(tk string) string { return "csrf_token=" + tk }, code: http.StatusSeeOther},
+		{name: "cross-site put with token", method: http.MethodPut, header: crossSite, form: func(tk string) url.Values { return url.Values{"csrf_token": {tk}} }, code: http.StatusForbidden},
+		{name: "cross-site patch with token", method: http.MethodPatch, header: crossSite, form: func(tk string) url.Values { return url.Values{"csrf_token": {tk}} }, code: http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,9 +120,6 @@ func TestLogoutMethods(t *testing.T) {
 			}
 			rec := e.doForm(tc.method, target, cookies, tc.header, form)
 			assert.Equal(t, tc.code, rec.Code)
-			if tc.code == http.StatusMethodNotAllowed {
-				assert.Equal(t, "GET, POST", rec.Header().Get("Allow"))
-			}
 			if tc.code == http.StatusSeeOther {
 				assert.Equal(t, []string{s.RefreshToken}, e.idp.Revoked())
 			} else {
@@ -192,4 +196,178 @@ func TestLogoutForgetsTokens(t *testing.T) {
 	e.do(http.MethodGet, "/r1", old, nil)
 	assert.ErrorIs(t, <-errs, ErrNoSession)
 	assert.Equal(t, refreshes, e.idp.Refreshes())
+}
+
+func TestLogoutStaleCookie(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing))
+	e.mountLogout(t)
+	errs := make(chan error, 1)
+	e.mountResourceToken(t, "/r1", billing, errs)
+	old := e.loggedIn(t)
+
+	rec := e.do(http.MethodGet, "/r1", old, nil)
+	require.NoError(t, <-errs)
+	latest, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+	require.NoError(t, err)
+
+	require.Equal(t, http.StatusSeeOther, e.do(http.MethodGet, "/bff/logout?csrf_token="+latest.LogoutCSRFToken, old, nil).Code)
+	assert.Equal(t, []string{latest.RefreshToken}, e.idp.Revoked())
+}
+
+// holdRefresh holds the refresh token grants until released.
+type holdRefresh struct {
+	base    http.RoundTripper
+	started chan struct{}
+	release chan struct{}
+}
+
+func (h *holdRefresh) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if bytes.Contains(body, []byte("grant_type=refresh_token")) {
+		h.started <- struct{}{}
+		<-h.release
+	}
+	return h.base.RoundTrip(r)
+}
+
+func (e *testEnv) waitQueued(t *testing.T, id string, n int) {
+	t.Helper()
+	key := sha256.Sum256([]byte(id))
+	require.Eventually(t, func() bool {
+		e.fe.tokens.mu.Lock()
+		defer e.fe.tokens.mu.Unlock()
+		st := e.fe.tokens.sessions[key]
+		return st != nil && st.refs == n
+	}, time.Second, time.Millisecond)
+}
+
+func TestLogoutDuringRefresh(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing))
+	e.mountLogout(t)
+	errs := make(chan error, 1)
+	e.mountResourceToken(t, "/r1", billing, errs)
+	cookies := e.loggedIn(t)
+	s, _, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+	client := *e.fe.provider.client
+	hr := &holdRefresh{base: client.Transport, started: make(chan struct{}), release: make(chan struct{})}
+	client.Transport = hr
+	e.fe.provider.client = &client
+	release := sync.OnceFunc(func() { close(hr.release) })
+	t.Cleanup(release)
+
+	refreshed := make(chan *httptest.ResponseRecorder)
+	go func() { refreshed <- e.do(http.MethodGet, "/r1", cookies, nil) }()
+	<-hr.started
+	ctx, cancel := context.WithCancel(t.Context())
+	logout := make(chan *httptest.ResponseRecorder)
+	go func() {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, appOrigin+"/bff/logout?csrf_token="+s.LogoutCSRFToken, nil)
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		e.router.ServeHTTP(rec, req)
+		logout <- rec
+	}()
+	e.waitQueued(t, s.LogoutCSRFToken, 2)
+	cancel()
+	release()
+
+	rec := <-refreshed
+	require.NoError(t, <-errs)
+	latest, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusSeeOther, (<-logout).Code)
+	assert.Equal(t, []string{latest.RefreshToken}, e.idp.Revoked())
+}
+
+func TestLogoutStoredByReplica(t *testing.T) {
+	ms := &mapStore{records: make(map[string]store.Record)}
+	e := newTestEnv(t, oidctest.Options{}, WithStore(ms))
+	e.mountLogout(t)
+	cookies := e.loggedIn(t)
+	s, st, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = e.fe.tokens.Do(t.Context(), s.LogoutCSRFToken, func(*session) (*session, error) {
+			close(held)
+			<-release
+			return nil, nil
+		})
+	}()
+	<-held
+	logout := make(chan int)
+	go func() { logout <- e.do(http.MethodGet, "/bff/logout?csrf_token="+s.LogoutCSRFToken, cookies, nil).Code }()
+	e.waitQueued(t, s.LogoutCSRFToken, 2)
+	replica := *s
+	replica.RefreshToken = "replica"
+	replica.Generation++
+	require.NoError(t, e.fe.writeSession(t.Context(), http.Header{}, &replica, st))
+	close(release)
+
+	assert.Equal(t, http.StatusSeeOther, <-logout)
+	assert.Equal(t, []string{"replica"}, e.idp.Revoked())
+	assert.Empty(t, ms.records)
+}
+
+func TestRevocationRetry(t *testing.T) {
+	cases := []struct {
+		name       string
+		retryAfter string
+		failures   int32
+		attempts   int32
+		revoked    bool
+	}{
+		{name: "retried after 503", retryAfter: "0", failures: 2, attempts: 3, revoked: true},
+		{name: "bounded attempts", retryAfter: "0", failures: 5, attempts: 3},
+		{name: "retry after beyond the timeout", retryAfter: "60", failures: 1, attempts: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{})
+			client := *e.fe.provider.client
+			base := client.Transport
+			var attempts atomic.Int32
+			client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/revoke" && attempts.Add(1) <= tc.failures {
+					return &http.Response{
+						StatusCode: http.StatusServiceUnavailable,
+						Header:     http.Header{"Retry-After": {tc.retryAfter}},
+						Body:       http.NoBody,
+						Request:    r,
+					}, nil
+				}
+				return base.RoundTrip(r)
+			})
+			e.fe.provider.client = &client
+
+			start := time.Now()
+			err := e.fe.postRevocation(t.Context(), "rt")
+			assert.Less(t, time.Since(start), time.Second)
+			assert.Equal(t, tc.revoked, err == nil)
+			assert.Equal(t, tc.attempts, attempts.Load())
+		})
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		value string
+		want  time.Duration
+	}{
+		{value: "", want: time.Second},
+		{value: "3", want: 3 * time.Second},
+		{value: "-1", want: time.Second},
+		{value: now.Add(5 * time.Second).Format(http.TimeFormat), want: 5 * time.Second},
+		{value: now.Add(-5 * time.Second).Format(http.TimeFormat), want: 0},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, retryAfter(tc.value, now), tc.value)
+	}
 }

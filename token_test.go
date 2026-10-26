@@ -399,15 +399,20 @@ func TestResourceTransportErrors(t *testing.T) {
 
 	t.Run("refreshed id token with another issuer", func(t *testing.T) {
 		var logs bytes.Buffer
-		e := newTestEnv(t, oidctest.Options{}, WithResources(billing), WithLogHandler(slog.NewTextHandler(&logs, nil)))
+		e := newTestEnv(t, oidctest.Options{RotateRefreshTokens: true}, WithResources(billing), WithLogHandler(slog.NewTextHandler(&logs, nil)))
 		u := newUpstream(t)
 		e.mountResourceProxy(t, "/billing/*{any}", u, billing)
 		cookies := e.loggedIn(t)
+		s, _, err := e.fe.readSession(t.Context(), cookies)
+		require.NoError(t, err)
 		e.idp.Update(func(o *oidctest.Options) { o.Claims = map[string]any{"iss": "https://other.example.com"} })
 
 		assert.Equal(t, http.StatusUnauthorized, e.do(http.MethodGet, "/billing/invoices", cookies, nil).Code)
 		assert.Empty(t, u.requests)
 		assert.Contains(t, logs.String(), "refreshed id token")
+		revoked := e.idp.Revoked()
+		require.Len(t, revoked, 1)
+		assert.NotEqual(t, s.RefreshToken, revoked[0])
 	})
 
 	t.Run("session store failure", func(t *testing.T) {

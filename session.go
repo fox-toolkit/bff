@@ -275,6 +275,40 @@ func (fe *Frontend) deleteSession(ctx context.Context, h http.Header, st session
 	return fe.cfg.store.Delete(ctx, st.id)
 }
 
+// endSession deletes the session and revokes its refresh token. It holds the lock of the session, so it waits for a
+// token request in flight and revokes the latest refresh token, even when s comes from an older cookie. The request
+// that started it does not cancel it.
+func (fe *Frontend) endSession(ctx context.Context, h http.Header, s *session, st sessionState) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
+	defer cancel()
+	return fe.tokens.Do(ctx, s.LogoutCSRFToken, func(latest *session) (*session, error) {
+		if st.id != "" {
+			// Other replicas may have stored newer tokens.
+			stored, err := fe.loadSession(ctx, st.id)
+			switch {
+			case err == nil:
+				if latest == nil || stored.Generation > latest.Generation {
+					latest = stored
+				}
+			case !errors.Is(err, errSessionEnded):
+				return nil, err
+			}
+		}
+		if latest != nil && latest.Generation > s.Generation {
+			s.adopt(latest)
+		}
+		if err := fe.deleteSession(ctx, h, st); err != nil {
+			return nil, err
+		}
+		fe.tokens.Forget(s.LogoutCSRFToken)
+		if s.RefreshToken != "" {
+			// The session is already deleted, so a failed revocation only leaves the refresh token valid until it expires.
+			_ = fe.revoke(ctx, s.RefreshToken)
+		}
+		return nil, nil
+	})
+}
+
 // deleteSessionsBy deletes the stored sessions of the subject, restricted to the sid when it is not empty, and revokes
 // their refresh tokens.
 func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) error {
@@ -288,6 +322,8 @@ func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) e
 			continue
 		}
 		if s, err := decodeSession(data); err == nil && s.RefreshToken != "" {
+			// Back-Channel Logout 2.7 keeps the refresh tokens issued with offline_access, but here a refresh token
+			// only lives in the session, so nothing can use it once the session is deleted.
 			_ = fe.revoke(ctx, s.RefreshToken)
 		}
 	}

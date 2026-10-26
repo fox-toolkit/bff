@@ -7,11 +7,13 @@ package bff
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/fox-toolkit/bff/internal/oidctest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +117,31 @@ func TestTokenGroupForgetDuringDo(t *testing.T) {
 		return nil, nil
 	}))
 	assert.Empty(t, g.sessions)
+}
+
+func TestRefreshedIDToken(t *testing.T) {
+	cases := []struct {
+		name    string
+		login   map[string]any
+		refresh map[string]any
+		code    int
+	}{
+		{name: "same authentication", login: map[string]any{"auth_time": 1000}, refresh: map[string]any{"auth_time": 1000}, code: http.StatusOK},
+		{name: "aud changed", refresh: map[string]any{"aud": []string{"app", "other"}, "azp": "app"}, code: http.StatusUnauthorized},
+		{name: "auth_time changed", login: map[string]any{"auth_time": 1000}, refresh: map[string]any{"auth_time": 2000}, code: http.StatusUnauthorized},
+		{name: "nonce changed", refresh: map[string]any{"nonce": "other"}, code: http.StatusUnauthorized},
+		{name: "sub changed", refresh: map[string]any{"sub": "other"}, code: http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{Claims: tc.login})
+			e.mount(t, "/api")
+			cookies := e.loggedIn(t)
+			e.idp.Update(func(o *oidctest.Options) { o.Claims = tc.refresh })
+			e.skipAhead(5 * time.Minute)
+
+			assert.Equal(t, tc.code, e.do(http.MethodGet, "/api", cookies, nil).Code)
+			assert.Equal(t, tc.code == http.StatusUnauthorized, len(e.idp.Revoked()) == 1)
+		})
+	}
 }

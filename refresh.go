@@ -5,11 +5,14 @@
 package bff
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,6 +28,8 @@ const (
 	refreshReuse = time.Minute
 	// refreshTimeout bounds a refresh, which is not canceled with the request that started it.
 	refreshTimeout = 30 * time.Second
+	// endSessionTimeout bounds the end of a session, which waits for a refresh in flight.
+	endSessionTimeout = time.Minute
 )
 
 var (
@@ -270,14 +275,61 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 
 	rawIDToken, _ := token.Extra("id_token").(string)
 	if rawIDToken != "" {
-		// OpenID Connect Core 12.2: a refreshed ID token must be valid and keep the same subject.
 		idToken, err := fe.verifyIDToken(ctx, rawIDToken)
-		if err != nil {
-			return refreshResult{}, fmt.Errorf("%w: refreshed id token: %w", errSessionEnded, err)
+		if err == nil {
+			err = sameAuthentication(s, idToken)
 		}
-		if idToken.Subject != s.Subject {
-			return refreshResult{}, fmt.Errorf("%w: refreshed id token: sub changed", errSessionEnded)
+		if err != nil {
+			// The session ends while its refresh token is still valid.
+			_ = fe.revoke(ctx, cmp.Or(token.RefreshToken, s.RefreshToken))
+			return refreshResult{}, fmt.Errorf("%w: refreshed id token: %w", errSessionEnded, err)
 		}
 	}
 	return refreshResult{token: token, idToken: rawIDToken, at: fe.now()}, nil
+}
+
+// sameAuthentication checks that a refreshed ID token keeps the subject, audience, authentication time and nonce of
+// the ID token of the session, as required by OpenID Connect Core 12.2.
+func sameAuthentication(s *session, idToken *oidc.IDToken) error {
+	if idToken.Subject != s.Subject {
+		return errors.New("sub changed")
+	}
+	payload, err := s.idTokenPayload()
+	if err != nil {
+		return err
+	}
+	var prev, cur authentication
+	if err := json.Unmarshal(payload, &prev); err != nil {
+		return err
+	}
+	if err := idToken.Claims(&cur); err != nil {
+		return err
+	}
+	switch {
+	case !slices.Equal(slices.Sorted(slices.Values(prev.Audience)), slices.Sorted(slices.Values(cur.Audience))):
+		return errors.New("aud changed")
+	case cur.AuthTime != 0 && prev.AuthTime != 0 && cur.AuthTime != prev.AuthTime:
+		return errors.New("auth_time changed")
+	case cur.Nonce != "" && cur.Nonce != prev.Nonce:
+		return errors.New("nonce changed")
+	}
+	return nil
+}
+
+type authentication struct {
+	Nonce    string   `json:"nonce"`
+	Audience audience `json:"aud"`
+	AuthTime float64  `json:"auth_time"`
+}
+
+// audience is the aud claim, a string or an array of strings.
+type audience []string
+
+func (a *audience) UnmarshalJSON(data []byte) error {
+	var one string
+	if json.Unmarshal(data, &one) == nil {
+		*a = audience{one}
+		return nil
+	}
+	return json.Unmarshal(data, (*[]string)(a))
 }

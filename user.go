@@ -74,14 +74,9 @@ func (fe *Frontend) UserHandler() fox.HandlerFunc {
 	}
 }
 
-// claims returns the user claims of the ID token, merged with the UserInfo claims, without the protocol claims. The
-// ID token was verified at login and is kept encrypted in the session, so its signature is not checked again.
+// claims returns the user claims of the ID token, merged with the UserInfo claims, without the protocol claims.
 func (s *session) claims() (map[string]any, error) {
-	parts := strings.Split(s.IDToken, ".")
-	if len(parts) != 3 {
-		return nil, errors.New("malformed id token")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	payload, err := s.idTokenPayload()
 	if err != nil {
 		return nil, err
 	}
@@ -98,4 +93,14 @@ func (s *session) claims() (map[string]any, error) {
 		}
 	}
 	return claims, nil
+}
+
+// idTokenPayload returns the claims of the ID token of the session. The ID token is verified before it is kept
+// encrypted in the session, so its signature is not checked again.
+func (s *session) idTokenPayload() ([]byte, error) {
+	parts := strings.Split(s.IDToken, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("malformed id token")
+	}
+	return base64.RawURLEncoding.DecodeString(parts[1])
 }

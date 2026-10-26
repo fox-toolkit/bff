@@ -12,38 +12,31 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/fox-toolkit/fox"
 )
 
 const (
-	revocationTimeout = 10 * time.Second
+	revocationTimeout     = 10 * time.Second
+	maxRevocationAttempts = 3
 	// maxLogoutBody bounds the form body of a logout, which only contains the CSRF token.
 	maxLogoutBody = 4096
 )
 
 // LogoutHandler returns a handler that ends the session and redirects to the end session endpoint of the provider, as
-// defined by OpenID Connect RP-Initiated Logout. It accepts GET with the csrf_token query parameter, and POST with the
-// csrf_token form field.
+// defined by OpenID Connect RP-Initiated Logout. It requires the csrf_token query parameter or form field.
 func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 	return func(c *fox.Context) {
 		r := c.Request()
 		w := c.Writer()
 		w.Header().Set("Cache-Control", "no-store")
 
-		switch r.Method {
-		case http.MethodGet:
-		case http.MethodPost:
-			// Forms cannot send a custom header, so only the cross-origin protection applies.
-			if err := fe.cop.Check(r); err != nil {
-				fe.logRejected(r, "cross-site request", err)
-				http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
-				return
-			}
-		default:
-			w.Header().Set("Allow", "GET, POST")
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		// A logout comes from a link or a form, which cannot send the CSRF header, so only CrossOriginProtection applies.
+		if err := fe.cop.Check(r); err != nil {
+			fe.logRejected(r, "cross-site request", err)
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
 
@@ -59,31 +52,20 @@ func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 			return
 		}
 
-		// On POST, the token is in the form body, so it stays out of the URL.
-		var token string
-		if r.Method == http.MethodGet {
-			token = r.URL.Query().Get("csrf_token")
-		} else {
-			r.Body = http.MaxBytesReader(w, r.Body, maxLogoutBody)
-			if err := r.ParseForm(); err == nil {
-				token = r.PostForm.Get("csrf_token")
-			}
-		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxLogoutBody)
+		// Like the query of the other handlers, a malformed parameter does not prevent reading the others.
+		_ = r.ParseForm()
+		token := r.Form.Get("csrf_token")
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.LogoutCSRFToken)) != 1 {
 			fe.logRejected(r, "invalid logout", errors.New("missing or invalid csrf token"))
 			badRequest(w)
 			return
 		}
 
-		if err := fe.deleteSession(r.Context(), w.Header(), st); err != nil {
-			fe.logFailed(r, "session store", err)
+		if err := fe.endSession(r.Context(), w.Header(), s, st); err != nil {
+			fe.logFailed(r, "end session", err)
 			internalError(w)
 			return
-		}
-		fe.tokens.Forget(s.LogoutCSRFToken)
-		if s.RefreshToken != "" {
-			// The session is already deleted, so a failed revocation only leaves the refresh token valid until it expires.
-			_ = fe.revoke(r.Context(), s.RefreshToken)
 		}
 		http.Redirect(w, r, fe.endSessionURL(s.IDToken), http.StatusSeeOther)
 	}
@@ -133,20 +115,53 @@ func (fe *Frontend) postRevocation(ctx context.Context, refreshToken string) err
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationTimeout)
 	defer cancel()
 
+	for attempt := 1; ; attempt++ {
+		resp, err := fe.sendRevocation(ctx, refreshToken)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		err = fmt.Errorf("revocation: unexpected status %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusServiceUnavailable || attempt == maxRevocationAttempts {
+			return err
+		}
+		// RFC 7009 2.2.1: the token still exists, and the request may be retried after a delay.
+		delay := retryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if deadline, _ := ctx.Deadline(); time.Until(deadline) < delay {
+			return err
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
+func (fe *Frontend) sendRevocation(ctx context.Context, refreshToken string) (*http.Response, error) {
 	form := url.Values{"token": {refreshToken}, "token_type_hint": {"refresh_token"}}
 	req, err := fe.auth.newRequest(ctx, fe.provider.revocationEndpoint, form, fe.now)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
 	resp, err := fe.provider.client.Do(req) //nolint:gosec // revocation endpoint from the provider metadata, checked by NewProvider
 	if err != nil {
-		return err
+		return nil, err
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("revocation: unexpected status %d", resp.StatusCode)
+	return resp, nil
+}
+
+// retryAfter returns the delay of a Retry-After header value, in seconds or as a date, or one second when it has none.
+func retryAfter(value string, now time.Time) time.Duration {
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
 	}
-	return nil
+	if t, err := http.ParseTime(value); err == nil {
+		return max(t.Sub(now), 0)
+	}
+	return time.Second
 }
