@@ -233,3 +233,27 @@ func TestSendDPoPProviderError(t *testing.T) {
 		})
 	}
 }
+
+func TestMiddlewareDPoPMismatch(t *testing.T) {
+	for _, dpop := range []bool{false, true} {
+		t.Run(strconv.FormatBool(dpop), func(t *testing.T) {
+			var opts []Option
+			if dpop {
+				opts = append(opts, WithDPoP())
+			}
+			e := newTestEnv(t, oidctest.Options{}, opts...)
+			e.mount(t, "/api")
+			cookies := e.loggedIn(t)
+			s, _, err := e.fe.readSession(t.Context(), cookies)
+			require.NoError(t, err)
+
+			e.fe.cfg.dpop = !dpop
+			rec := e.do(http.MethodGet, "/api", cookies, nil)
+			assert.Equal(t, http.StatusUnauthorized, rec.Code)
+			lines := sessionCookieLines(rec.Header())
+			require.Len(t, lines, 1)
+			assert.Contains(t, lines[0], "Max-Age=0")
+			assert.Equal(t, []string{s.RefreshToken}, e.idp.Revoked())
+		})
+	}
+}

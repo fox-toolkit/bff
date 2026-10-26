@@ -14,7 +14,8 @@ import (
 )
 
 // AccessToken returns the access token of a request authenticated by [Frontend.Middleware]. It reports false for an
-// anonymous request and for a request not handled by the middleware. The returned token has no refresh token.
+// anonymous request and for a request not handled by the middleware. The returned token has no refresh token. A
+// DPoP-bound access token must be sent with [Transport].
 func AccessToken(ctx context.Context) (*oauth2.Token, bool) {
 	st, ok := ctx.Value(sessionKey{}).(*requestState)
 	if !ok || st.session == nil || st.session.AccessToken == "" {
