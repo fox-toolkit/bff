@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -93,26 +94,61 @@ func clientKeyAlgs(pub crypto.PublicKey) []string {
 }
 
 // newRequest returns a POST request of the form to the endpoint, authenticated as the client.
-func (a *clientAuth) newRequest(ctx context.Context, endpoint string, form url.Values, now time.Time) (*http.Request, error) {
-	if a.key != nil {
-		assertion, err := a.assertion(now)
+func (a *clientAuth) newRequest(ctx context.Context, endpoint string, form url.Values, now func() time.Time) (*http.Request, error) {
+	if a.key == nil {
+		req, err := newFormRequest(ctx, endpoint, form.Encode())
 		if err != nil {
 			return nil, err
 		}
-		form = cloneValues(form)
-		form.Set("client_id", a.id)
-		form.Set("client_assertion_type", assertionType)
-		form.Set("client_assertion", assertion)
+		// RFC 6749 2.3.1: the client credentials are form-encoded before being used for basic authentication.
+		req.SetBasicAuth(url.QueryEscape(a.id), url.QueryEscape(a.secret))
+		return req, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+
+	body, err := a.assertionForm(form, now())
+	if err != nil {
+		return nil, err
+	}
+	req, err := newFormRequest(ctx, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	// OpenID Connect Core 9: an assertion is used only once, so a request sent again, such as after a DPoP nonce
+	// error, carries a new one.
+	req.GetBody = func() (io.ReadCloser, error) {
+		retry, err := a.assertionForm(form, now())
+		if err != nil {
+			return nil, err
+		}
+		if len(retry) != len(body) {
+			return nil, errAssertionSize
+		}
+		return io.NopCloser(strings.NewReader(retry)), nil
+	}
+	return req, nil
+}
+
+var errAssertionSize = errors.New("client assertion size changed")
+
+// assertionForm returns the encoded form with a new client assertion.
+func (a *clientAuth) assertionForm(form url.Values, now time.Time) (string, error) {
+	assertion, err := a.assertion(now)
+	if err != nil {
+		return "", err
+	}
+	form = cloneValues(form)
+	form.Set("client_id", a.id)
+	form.Set("client_assertion_type", assertionType)
+	form.Set("client_assertion", assertion)
+	return form.Encode(), nil
+}
+
+func newFormRequest(ctx context.Context, endpoint, body string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if a.key == nil {
-		// RFC 6749 2.3.1: the client credentials are form-encoded before being used for basic authentication.
-		req.SetBasicAuth(url.QueryEscape(a.id), url.QueryEscape(a.secret))
-	}
 	return req, nil
 }
 

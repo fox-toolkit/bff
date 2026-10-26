@@ -5,6 +5,7 @@
 package bff
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -59,6 +60,11 @@ func TestRequestToken(t *testing.T) {
 			check: func(t *testing.T, err error, expiry time.Time) {
 				require.NoError(t, err)
 				assert.WithinDuration(t, time.Now().Add(time.Hour), expiry, time.Minute)
+			}},
+		{name: "expires_in overflow", status: http.StatusOK, body: `{"access_token":"a","token_type":"Bearer","expires_in":10000000000}`,
+			check: func(t *testing.T, err error, expiry time.Time) {
+				require.NoError(t, err)
+				assert.WithinDuration(t, time.Now().Add(math.MaxInt32*time.Second), expiry, time.Minute)
 			}},
 		{name: "error", status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_description":"expired"}`,
 			check: func(t *testing.T, err error, _ time.Time) {

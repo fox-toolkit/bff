@@ -133,7 +133,7 @@ func (fe *Frontend) postRevocation(ctx context.Context, refreshToken string) err
 	defer cancel()
 
 	form := url.Values{"token": {refreshToken}, "token_type_hint": {"refresh_token"}}
-	req, err := fe.auth.newRequest(ctx, fe.provider.revocationEndpoint, form, fe.now())
+	req, err := fe.auth.newRequest(ctx, fe.provider.revocationEndpoint, form, fe.now)
 	if err != nil {
 		return err
 	}

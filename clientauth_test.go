@@ -102,3 +102,21 @@ func TestPrivateKeyJWT(t *testing.T) {
 		})
 	}
 }
+
+func TestPrivateKeyJWTDPoPNonce(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	opts := oidctest.Options{
+		AccessTokenTTL: 30 * time.Second,
+		DPoPNonce:      "n1",
+		ClientKey:      key.Public(),
+		Metadata:       map[string]any{"token_endpoint_auth_methods_supported": bothMethods},
+	}
+	e := newTestEnvWithClient(t, opts, func(c *Client) { c.ClientSecret, c.ClientKey = "", key }, WithDPoP(true))
+	e.mount(t, "/api")
+	cookies := e.loggedIn(t)
+
+	e.idp.Update(func(o *oidctest.Options) { o.DPoPNonce = "n2" })
+	e.skipAhead(40 * time.Second)
+	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
+}
