@@ -161,6 +161,12 @@ func TestNewFrontend(t *testing.T) {
 		}, opts: []Option{WithDPoP(true)}},
 		{name: "unsupported signing algorithm", client: func(*Client) {}, opts: []Option{WithSigningAlgorithms("HS256")}},
 		{name: "no common signing algorithm", client: func(*Client) {}, opts: []Option{WithSigningAlgorithms("ES256")}},
+		{name: "provider with unsupported signing algorithms", client: func(c *Client) {
+			c.Provider = newTestProvider(t, map[string]any{"id_token_signing_alg_values_supported": []string{"HS256"}})
+		}, opts: []Option{WithSigningAlgorithms("ES256")}},
+		{name: "provider with only unsupported signing algorithms", client: func(c *Client) {
+			c.Provider = newTestProvider(t, map[string]any{"id_token_signing_alg_values_supported": []string{"ES256K"}})
+		}},
 		{name: "pushed authorization mode", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(3)}},
 		{name: "pushed authorization without endpoint", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(PushedAuthorizationRequired)}},
 		{name: "pushed authorization disabled but required", client: func(c *Client) {

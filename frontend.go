@@ -25,6 +25,7 @@ type Frontend struct {
 	cfg                   *config
 	provider              *Provider
 	verifier              *oidc.IDTokenVerifier
+	logoutVerifier        *oidc.IDTokenVerifier
 	now                   func() time.Time
 	cop                   *http.CrossOriginProtection
 	refreshGroup          *refreshGroup
@@ -83,8 +84,12 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 
 	algs := cfg.signingAlgs
 	if len(algs) == 0 {
-		algs = p.idTokenAlgs
+		algs = slices.DeleteFunc(slices.Clone(p.idTokenAlgs), func(alg string) bool { return !slices.Contains(signingAlgs, alg) })
+		if len(algs) == 0 && len(p.idTokenAlgs) > 0 {
+			return nil, fmt.Errorf("%w: no supported signing algorithm advertised by the provider", ErrInvalidConfig)
+		}
 	}
+	verifierConfig := &oidc.Config{ClientID: client.ClientID, SupportedSigningAlgs: algs}
 
 	auth, err := newClientAuth(client, p)
 	if err != nil {
@@ -111,10 +116,11 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 	sum := sha256.Sum256([]byte(p.issuer + "\x00" + client.ClientID))
 	partition := base64.RawURLEncoding.EncodeToString(sum[:])
 	fe := &Frontend{
-		cfg:      cfg,
-		aead:     scopedAEAD{AEAD: aead, scope: partition},
-		provider: p,
-		verifier: oidc.NewVerifier(p.issuer, p.keys, &oidc.Config{ClientID: client.ClientID, SupportedSigningAlgs: algs}),
+		cfg:            cfg,
+		aead:           scopedAEAD{AEAD: aead, scope: partition},
+		provider:       p,
+		verifier:       oidc.NewVerifier(p.issuer, providerKeySet{p.keys}, verifierConfig),
+		logoutVerifier: oidc.NewVerifier(p.issuer, p.keys, verifierConfig),
 		oauth2: oauth2.Config{
 			ClientID:    client.ClientID,
 			Endpoint:    p.oidc.Endpoint(),

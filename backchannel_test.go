@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,6 +143,32 @@ func TestBackchannelInvalidToken(t *testing.T) {
 		assert.Equal(t, http.StatusOK, e.backchannel(e.idp.Sign("logout+jwt", valid())).Code)
 		assert.Empty(t, ms.records)
 	})
+}
+
+type keySetRequests struct {
+	base http.RoundTripper
+	n    *atomic.Int32
+}
+
+func (c keySetRequests) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == "/jwks" {
+		c.n.Add(1)
+	}
+	return c.base.RoundTrip(r)
+}
+
+func TestBackchannelUnknownKeyID(t *testing.T) {
+	e, _ := newBackchannelEnv(t)
+	e.loggedIn(t)
+	var n atomic.Int32
+	client := e.fe.provider.client
+	client.Transport = keySetRequests{base: client.Transport, n: &n}
+
+	e.idp.RotateKey()
+	for range 20 {
+		assert.Equal(t, http.StatusBadRequest, e.backchannel(e.idp.LogoutToken("app", "alice", "")).Code)
+	}
+	assert.Equal(t, int32(0), n.Load())
 }
 
 func TestBackchannelRequiresStore(t *testing.T) {

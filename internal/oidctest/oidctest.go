@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -89,12 +90,18 @@ type Server struct {
 	refresh     map[string]*grant
 	access      map[string]grant
 	jtis        map[string]bool
+	key         atomic.Pointer[providerKey]
 	revoked     []string
 	endSessions []EndSession
 	assertions  []Assertion
 	requests    []RequestObject
 	opts        Options
 	mu          sync.Mutex
+}
+
+type providerKey struct {
+	key *rsa.PrivateKey
+	id  string
 }
 
 type grant struct {
@@ -120,6 +127,7 @@ func NewServer(opts Options) *Server {
 		refresh: make(map[string]*grant),
 		access:  make(map[string]grant),
 	}
+	s.key.Store(&providerKey{key: signingKey(), id: keyID})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.discovery)
 	mux.HandleFunc("GET /jwks", s.jwks)
@@ -186,10 +194,20 @@ func (s *Server) RequestObjects() []RequestObject {
 	return append([]RequestObject(nil), s.requests...)
 }
 
+// RotateKey replaces the provider key with a new key, published with a new key ID.
+func (s *Server) RotateKey() {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+	s.key.Store(&providerKey{key: key, id: randomString()})
+}
+
 // Sign returns a JWT with the given claims and typ header, signed by the provider key.
 func (s *Server) Sign(typ string, claims map[string]any) string {
+	key := s.key.Load()
 	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: signingKey(), KeyID: keyID}},
+		jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: key.key, KeyID: key.id}},
 		(&jose.SignerOptions{}).WithType(jose.ContentType(typ)),
 	)
 	if err != nil {
@@ -255,9 +273,10 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
+	key := s.key.Load()
 	keys := []any{jose.JSONWebKey{
-		Key:       &signingKey().PublicKey,
-		KeyID:     keyID,
+		Key:       &key.key.PublicKey,
+		KeyID:     key.id,
 		Algorithm: string(jose.RS256),
 		Use:       "sig",
 	}}

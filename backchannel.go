@@ -64,7 +64,7 @@ func (fe *Frontend) verifyLogoutToken(ctx context.Context, raw string) (string, 
 		return "", "", fmt.Errorf("%w: missing", errInvalidLogoutToken)
 	}
 	// Steps 2 to 4: signature, algorithm, iss, aud and exp are validated as for an ID token.
-	token, err := fe.verifier.Verify(ctx, raw)
+	token, err := fe.logoutVerifier.Verify(ctx, raw)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
 	}

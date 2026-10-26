@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
@@ -100,7 +99,7 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		parEndpoint:          metadata.PAREndpoint,
 		promptValues:         metadata.PromptValues,
 		dpopAlgs:             metadata.DPoPAlgs,
-		idTokenAlgs:          slices.DeleteFunc(metadata.IDTokenAlgs, func(alg string) bool { return !slices.Contains(signingAlgs, alg) }),
+		idTokenAlgs:          metadata.IDTokenAlgs,
 		authMethods:          metadata.AuthMethods,
 		authAlgs:             metadata.AuthAlgs,
 		requestObjectAlgs:    metadata.RequestObjectAlgs,

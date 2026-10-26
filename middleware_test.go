@@ -222,6 +222,16 @@ func TestMiddlewareRefreshRotation(t *testing.T) {
 	assert.Equal(t, token, (*got)[len(*got)-1].state.session.AccessToken)
 }
 
+func TestMiddlewareRefreshKeyRotation(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second})
+	e.mount(t, "/api")
+	cookies := e.loggedIn(t)
+
+	e.idp.RotateKey()
+	e.skipAhead(20 * time.Second)
+	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
+}
+
 func TestMiddlewareRefreshRejected(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second})
 	e.mount(t, "/api")

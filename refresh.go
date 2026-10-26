@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	// refreshSkew is how long before its expiration an access token is refreshed.
 	refreshSkew = time.Minute
 	// refreshReuse is how long the result of a refresh is reused for the requests sent with the refresh token it
 	// replaced, since a browser sends concurrent requests with the same session.
