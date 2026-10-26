@@ -1,5 +1,6 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/fox-toolkit/bff.svg)](https://pkg.go.dev/github.com/fox-toolkit/bff)
 [![tests](https://github.com/fox-toolkit/bff/actions/workflows/tests.yaml/badge.svg)](https://github.com/fox-toolkit/bff/actions?query=workflow%3Atests)
+[![codecov](https://codecov.io/gh/fox-toolkit/bff/graph/badge.svg?token=7M87P7Q31N)](https://codecov.io/gh/fox-toolkit/bff)
 ![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/fox-toolkit/bff)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/fox-toolkit/bff)
 
