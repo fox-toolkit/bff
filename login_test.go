@@ -31,6 +31,11 @@ type testEnv struct {
 
 func newTestEnv(t testing.TB, opts oidctest.Options, feOpts ...Option) *testEnv {
 	t.Helper()
+	return newTestEnvWithClient(t, opts, func(*Client) {}, feOpts...)
+}
+
+func newTestEnvWithClient(t testing.TB, opts oidctest.Options, client func(*Client), feOpts ...Option) *testEnv {
+	t.Helper()
 	if opts.Subject == "" {
 		opts.Subject = "alice"
 	}
@@ -38,14 +43,16 @@ func newTestEnv(t testing.TB, opts oidctest.Options, feOpts ...Option) *testEnv 
 	t.Cleanup(idp.Close)
 	p, err := NewProvider(t.Context(), idp.URL, WithHTTPClient(idp.Client()))
 	require.NoError(t, err)
-	fe, err := NewFrontend(Client{
+	c := Client{
 		Provider:              p,
 		ClientID:              "app",
 		ClientSecret:          oidctest.ClientSecret,
 		RedirectURL:           appOrigin + "/bff/callback",
 		PostLogoutRedirectURL: appOrigin + "/",
 		Scopes:                []string{"openid"},
-	}, newGCMAEAD(t), feOpts...)
+	}
+	client(&c)
+	fe, err := NewFrontend(c, newGCMAEAD(t), feOpts...)
 	require.NoError(t, err)
 
 	f := fox.MustRouter()
@@ -149,7 +156,7 @@ func TestLoginPushedAuthorizationFailure(t *testing.T) {
 		update func(e *testEnv)
 	}{
 		{name: "not found", update: func(e *testEnv) { e.fe.parEndpoint = e.idp.URL + "/missing" }},
-		{name: "invalid client", update: func(e *testEnv) { e.fe.oauth2.ClientSecret = "other" }},
+		{name: "invalid client", update: func(e *testEnv) { e.fe.auth.secret = "other" }},
 		{name: "unreachable", update: func(e *testEnv) { e.idp.Close() }},
 	}
 	for _, tc := range cases {

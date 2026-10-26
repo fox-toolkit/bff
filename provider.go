@@ -30,6 +30,8 @@ type Provider struct {
 	promptValues       []string
 	dpopAlgs           []string
 	idTokenAlgs        []string
+	authMethods        []string
+	authAlgs           []string
 	issParameter       bool
 	requirePAR         bool
 }
@@ -61,6 +63,8 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		PromptValues       []string `json:"prompt_values_supported"`
 		DPoPAlgs           []string `json:"dpop_signing_alg_values_supported"`
 		IDTokenAlgs        []string `json:"id_token_signing_alg_values_supported"`
+		AuthMethods        []string `json:"token_endpoint_auth_methods_supported"`
+		AuthAlgs           []string `json:"token_endpoint_auth_signing_alg_values_supported"`
 		ISSParameter       bool     `json:"authorization_response_iss_parameter_supported"`
 		RequirePAR         bool     `json:"require_pushed_authorization_requests"`
 	}
@@ -94,6 +98,8 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		promptValues:       metadata.PromptValues,
 		dpopAlgs:           metadata.DPoPAlgs,
 		idTokenAlgs:        metadata.IDTokenAlgs,
+		authMethods:        metadata.AuthMethods,
+		authAlgs:           metadata.AuthAlgs,
 		nonces:             newNonceCache(),
 		issParameter:       metadata.ISSParameter,
 		requirePAR:         metadata.RequirePAR,

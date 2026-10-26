@@ -8,9 +8,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"net/url"
 	"sync"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 )
@@ -117,11 +119,12 @@ func (fe *Frontend) redeem(ctx context.Context, s *session) (refreshResult, erro
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
-	ctx = fe.providerContext(ctx, key)
+	client := fe.providerClient(key)
+	ctx = oidc.ClientContext(ctx, client)
 
-	token, err := fe.oauth2.TokenSource(ctx, &oauth2.Token{RefreshToken: s.RefreshToken}).Token()
+	token, err := fe.requestToken(ctx, client, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {s.RefreshToken}})
 	if err != nil {
-		if re, ok := errors.AsType[*oauth2.RetrieveError](err); ok && re.ErrorCode == "invalid_grant" {
+		if te, ok := errors.AsType[*tokenError](err); ok && te.Code == "invalid_grant" {
 			return refreshResult{}, errSessionEnded
 		}
 		return refreshResult{}, err

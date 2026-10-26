@@ -144,14 +144,10 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 // pushAuthorizationRequest pushes the authorization request to the provider, as defined by RFC 9126, and returns its
 // request URI.
 func (fe *Frontend) pushAuthorizationRequest(ctx context.Context, params url.Values) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fe.parEndpoint, strings.NewReader(params.Encode()))
+	req, err := fe.auth.newRequest(ctx, fe.parEndpoint, params, fe.now())
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// RFC 6749 2.3.1: the client credentials are form-encoded before being used for basic authentication.
-	req.SetBasicAuth(url.QueryEscape(fe.oauth2.ClientID), url.QueryEscape(fe.oauth2.ClientSecret))
-
 	resp, err := fe.provider.client.Do(req)
 	if err != nil {
 		return "", err
@@ -273,7 +269,7 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 
 		s, err := fe.exchange(r, q.Get("code"), ls)
 		if err != nil {
-			if _, ok := errors.AsType[*oauth2.RetrieveError](err); ok || errors.Is(err, errInvalidLogin) {
+			if _, ok := errors.AsType[*tokenError](err); ok || errors.Is(err, errInvalidLogin) {
 				fe.logRejected(r, "invalid callback", err)
 				badRequest(w)
 			} else {
@@ -315,8 +311,14 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 			return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
 		}
 	}
-	ctx := fe.providerContext(r.Context(), key)
-	token, err := fe.oauth2.Exchange(ctx, code, oauth2.VerifierOption(ls.Verifier))
+	client := fe.providerClient(key)
+	ctx := oidc.ClientContext(r.Context(), client)
+	token, err := fe.requestToken(ctx, client, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {fe.oauth2.RedirectURL},
+		"code_verifier": {ls.Verifier},
+	})
 	if err != nil {
 		return nil, err
 	}

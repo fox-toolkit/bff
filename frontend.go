@@ -5,7 +5,6 @@
 package bff
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -21,6 +20,7 @@ import (
 // Frontend is a browser application served by the BFF, with its own OpenID Connect client and user sessions.
 type Frontend struct {
 	oauth2                oauth2.Config
+	auth                  clientAuth
 	aead                  AEAD
 	cfg                   *config
 	provider              *Provider
@@ -80,6 +80,11 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		return nil, fmt.Errorf("%w: no signing algorithm in common with the provider", ErrInvalidConfig)
 	}
 
+	auth, err := newClientAuth(client, p)
+	if err != nil {
+		return nil, err
+	}
+
 	sum := sha256.Sum256([]byte(p.issuer + "\x00" + client.ClientID))
 	partition := base64.RawURLEncoding.EncodeToString(sum[:])
 	fe := &Frontend{
@@ -88,12 +93,12 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		provider: p,
 		verifier: p.oidc.VerifierContext(p.ctx, &oidc.Config{ClientID: client.ClientID, SupportedSigningAlgs: cfg.signingAlgs}),
 		oauth2: oauth2.Config{
-			ClientID:     client.ClientID,
-			ClientSecret: client.ClientSecret,
-			Endpoint:     p.oidc.Endpoint(),
-			RedirectURL:  client.RedirectURL,
-			Scopes:       slices.Clone(client.Scopes),
+			ClientID:    client.ClientID,
+			Endpoint:    p.oidc.Endpoint(),
+			RedirectURL: client.RedirectURL,
+			Scopes:      slices.Clone(client.Scopes),
 		},
+		auth:                  auth,
 		postLogoutRedirectURL: client.PostLogoutRedirectURL,
 		parEndpoint:           parEndpoint,
 		now:                   time.Now,
@@ -105,20 +110,19 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 	return fe, nil
 }
 
-// providerContext returns ctx with the HTTP client of the provider, which sends DPoP proofs of the key when it is not
-// nil.
-func (fe *Frontend) providerContext(ctx context.Context, key *dpopKey) context.Context {
+// providerClient returns the HTTP client of the provider, which sends DPoP proofs of the key when it is not nil.
+func (fe *Frontend) providerClient(key *dpopKey) *http.Client {
 	client := fe.provider.client
-	if key != nil {
-		base := client.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		c := *client
-		c.Transport = &dpopTransport{base: base, key: key, nonces: fe.provider.nonces, now: fe.now}
-		client = &c
+	if key == nil {
+		return client
 	}
-	return oidc.ClientContext(ctx, client)
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c := *client
+	c.Transport = &dpopTransport{base: base, key: key, nonces: fe.provider.nonces, now: fe.now}
+	return &c
 }
 
 // logRejected logs a request rejected because it is invalid.

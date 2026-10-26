@@ -5,6 +5,7 @@
 package bff
 
 import (
+	"crypto"
 	"fmt"
 	"slices"
 )
@@ -16,8 +17,13 @@ type Client struct {
 	Provider *Provider
 	// ClientID is the client identifier.
 	ClientID string
-	// ClientSecret is the client secret.
+	// ClientSecret is the client secret, sent with client_secret_basic.
 	ClientSecret string
+	// ClientKey is the private key that authenticates the client with private_key_jwt. It must be an ECDSA P-256 key,
+	// an RSA key of at least 2048 bits or an Ed25519 key. A client has either a secret or a key.
+	ClientKey crypto.Signer
+	// ClientKeyID is the optional ID of the client key, sent in the assertions.
+	ClientKeyID string
 	// RedirectURL is the URL the provider redirects the user to after login, where [Frontend.CallbackHandler] is served.
 	RedirectURL string
 	// PostLogoutRedirectURL is the optional URL the provider redirects the user to after logout.
@@ -33,8 +39,14 @@ func (c *Client) validate() error {
 	if c.ClientID == "" {
 		return fmt.Errorf("%w: empty client id", ErrInvalidConfig)
 	}
-	if c.ClientSecret == "" {
-		return fmt.Errorf("%w: empty client secret", ErrInvalidConfig)
+	if (c.ClientSecret == "") == (c.ClientKey == nil) {
+		return fmt.Errorf("%w: client must have either a secret or a key", ErrInvalidConfig)
+	}
+	if c.ClientKey != nil && len(clientKeyAlgs(c.ClientKey.Public())) == 0 {
+		return fmt.Errorf("%w: unsupported client key", ErrInvalidConfig)
+	}
+	if c.ClientKey == nil && c.ClientKeyID != "" {
+		return fmt.Errorf("%w: client key id without client key", ErrInvalidConfig)
 	}
 	if err := checkURL(c.RedirectURL); err != nil {
 		return fmt.Errorf("%w: redirect url %w", ErrInvalidConfig, err)

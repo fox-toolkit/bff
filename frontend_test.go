@@ -5,6 +5,10 @@
 package bff
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
 	"testing"
 	"time"
 
@@ -90,6 +94,12 @@ func TestNewProvider(t *testing.T) {
 
 func TestNewFrontend(t *testing.T) {
 	p := newTestProvider(t, nil)
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	require.NoError(t, err)
+	rsa1024, err := rsa.GenerateKey(rand.Reader, 1024)
+	require.NoError(t, err)
 	valid := func() Client {
 		return Client{
 			Provider:              p,
@@ -126,6 +136,10 @@ func TestNewFrontend(t *testing.T) {
 		{name: "nil provider", client: func(c *Client) { c.Provider = nil }},
 		{name: "empty client id", client: func(c *Client) { c.ClientID = "" }},
 		{name: "empty client secret", client: func(c *Client) { c.ClientSecret = "" }},
+		{name: "secret and key", client: func(c *Client) { c.ClientKey = p256 }},
+		{name: "key id without key", client: func(c *Client) { c.ClientKeyID = "k1" }},
+		{name: "p384 key", client: func(c *Client) { c.ClientSecret, c.ClientKey = "", p384 }},
+		{name: "small rsa key", client: func(c *Client) { c.ClientSecret, c.ClientKey = "", rsa1024 }},
 		{name: "http redirect url", client: func(c *Client) { c.RedirectURL = "http://app.example.com/bff/callback" }},
 		{name: "relative redirect url", client: func(c *Client) { c.RedirectURL = "/bff/callback" }},
 		{name: "invalid post logout url", client: func(c *Client) { c.PostLogoutRedirectURL = "/" }},

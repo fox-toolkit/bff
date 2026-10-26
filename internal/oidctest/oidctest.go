@@ -42,6 +42,8 @@ var signingKey = sync.OnceValue(func() *rsa.PrivateKey {
 
 // Options configures a [Server]. Every field can be changed while the server runs, with [Server.Update].
 type Options struct {
+	// ClientKey is the public key that verifies the private_key_jwt assertions of the clients.
+	ClientKey crypto.PublicKey
 	// Metadata is added to the discovery document. A nil value removes a field.
 	Metadata map[string]any
 	// Claims are added to the ID tokens.
@@ -83,8 +85,10 @@ type Server struct {
 	pushed      map[string]url.Values
 	refresh     map[string]*grant
 	access      map[string]grant
+	jtis        map[string]bool
 	revoked     []string
 	endSessions []EndSession
+	assertions  []Assertion
 	opts        Options
 	mu          sync.Mutex
 }
@@ -108,6 +112,7 @@ func NewServer(opts Options) *Server {
 		opts:    opts,
 		codes:   make(map[string]grant),
 		pushed:  make(map[string]url.Values),
+		jtis:    make(map[string]bool),
 		refresh: make(map[string]*grant),
 		access:  make(map[string]grant),
 	}
@@ -147,6 +152,20 @@ func (s *Server) EndSessions() []EndSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]EndSession(nil), s.endSessions...)
+}
+
+// Assertion is a private_key_jwt assertion accepted by the provider.
+type Assertion struct {
+	Path  string
+	Alg   string
+	KeyID string
+}
+
+// Assertions returns the private_key_jwt assertions accepted by the provider.
+func (s *Server) Assertions() []Assertion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Assertion(nil), s.assertions...)
 }
 
 // Sign returns a JWT with the given claims and typ header, signed by the provider key.
@@ -456,6 +475,9 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 	if err := r.ParseForm(); err != nil {
 		return "", false
 	}
+	if r.PostForm.Get("client_assertion_type") == "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
+		return s.verifyAssertion(r)
+	}
 	id, secret, ok := r.BasicAuth()
 	if ok {
 		id, _ = url.QueryUnescape(id)
@@ -464,6 +486,46 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 		id, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
 	}
 	return id, id != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(ClientSecret)) == 1
+}
+
+// verifyAssertion verifies a private_key_jwt assertion with the audience required by draft-ietf-oauth-rfc7523bis and
+// returns the client ID.
+func (s *Server) verifyAssertion(r *http.Request) (string, bool) {
+	algs := []jose.SignatureAlgorithm{jose.ES256, jose.PS256, jose.RS256, jose.EdDSA}
+	jws, err := jose.ParseSigned(r.PostForm.Get("client_assertion"), algs)
+	if err != nil {
+		return "", false
+	}
+	header := jws.Signatures[0].Protected
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if header.ExtraHeaders[jose.HeaderType] != "client-authentication+jwt" || s.opts.ClientKey == nil {
+		return "", false
+	}
+	payload, err := jws.Verify(s.opts.ClientKey)
+	if err != nil {
+		return "", false
+	}
+	var claims struct {
+		Issuer   string `json:"iss"`
+		Subject  string `json:"sub"`
+		Audience any    `json:"aud"`
+		JTI      string `json:"jti"`
+		EXP      int64  `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", false
+	}
+	if claims.Issuer == "" || claims.Subject != claims.Issuer || claims.Audience != s.URL || claims.JTI == "" ||
+		s.jtis[claims.JTI] || time.Now().After(time.Unix(claims.EXP, 0)) {
+		return "", false
+	}
+	if id := r.PostForm.Get("client_id"); id != "" && id != claims.Issuer {
+		return "", false
+	}
+	s.jtis[claims.JTI] = true
+	s.assertions = append(s.assertions, Assertion{Path: r.URL.Path, Alg: header.Algorithm, KeyID: header.KeyID})
+	return claims.Issuer, true
 }
 
 func verifyChallenge(verifier, challenge string) bool {

@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/fox-toolkit/fox"
@@ -134,14 +133,10 @@ func (fe *Frontend) postRevocation(ctx context.Context, refreshToken string) err
 	defer cancel()
 
 	form := url.Values{"token": {refreshToken}, "token_type_hint": {"refresh_token"}}
-	body := strings.NewReader(form.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fe.provider.revocationEndpoint, body)
+	req, err := fe.auth.newRequest(ctx, fe.provider.revocationEndpoint, form, fe.now())
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// RFC 6749 2.3.1: the client credentials are form-encoded before being used for basic authentication.
-	req.SetBasicAuth(url.QueryEscape(fe.oauth2.ClientID), url.QueryEscape(fe.oauth2.ClientSecret))
 
 	resp, err := fe.provider.client.Do(req)
 	if err != nil {
