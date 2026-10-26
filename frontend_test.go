@@ -34,9 +34,13 @@ func TestNewProvider(t *testing.T) {
 			"revocation_endpoint":                            "https://idp.example.com/revoke",
 			"prompt_values_supported":                        []string{"none", "login"},
 			"authorization_response_iss_parameter_supported": true,
+			"pushed_authorization_request_endpoint":          "https://idp.example.com/par",
+			"require_pushed_authorization_requests":          true,
 		})
 		assert.Equal(t, "https://idp.example.com/logout", p.endSessionEndpoint)
 		assert.Equal(t, "https://idp.example.com/revoke", p.revocationEndpoint)
+		assert.Equal(t, "https://idp.example.com/par", p.parEndpoint)
+		assert.True(t, p.requirePAR)
 		assert.Equal(t, []string{"none", "login"}, p.promptValues)
 		assert.True(t, p.issParameter)
 	})
@@ -46,6 +50,13 @@ func TestNewProvider(t *testing.T) {
 		defer srv.Close()
 		_, err := NewProvider(t.Context(), srv.URL, WithHTTPClient(srv.Client()))
 		assert.Error(t, err)
+	})
+
+	t.Run("pushed authorization required without endpoint", func(t *testing.T) {
+		srv := oidctest.NewServer(oidctest.Options{Metadata: map[string]any{"require_pushed_authorization_requests": true}})
+		defer srv.Close()
+		_, err := NewProvider(t.Context(), srv.URL, WithHTTPClient(srv.Client()))
+		assert.ErrorIs(t, err, ErrInvalidConfig)
 	})
 
 	t.Run("invalid config", func(t *testing.T) {
@@ -59,7 +70,8 @@ func TestNewProvider(t *testing.T) {
 			{name: "issuer with fragment", issuer: "https://idp.example.com#x"},
 			{name: "nil http client", issuer: "https://idp.example.com", opts: []ProviderOption{WithHTTPClient(nil)}},
 		}
-		for _, endpoint := range []string{"token_endpoint", "jwks_uri", "end_session_endpoint", "revocation_endpoint"} {
+		for _, endpoint := range []string{"token_endpoint", "jwks_uri", "end_session_endpoint", "revocation_endpoint",
+			"pushed_authorization_request_endpoint"} {
 			t.Run("http "+endpoint, func(t *testing.T) {
 				srv := oidctest.NewServer(oidctest.Options{Metadata: map[string]any{endpoint: "http://idp.example.com/x"}})
 				defer srv.Close()
@@ -128,6 +140,14 @@ func TestNewFrontend(t *testing.T) {
 		{name: "csrf header value", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x-csrf", "")}},
 		{name: "nil unauthorized handler", client: func(*Client) {}, opts: []Option{WithUnauthorizedHandler(nil)}},
 		{name: "nil log handler", client: func(*Client) {}, opts: []Option{WithLogHandler(nil)}},
+		{name: "pushed authorization mode", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(3)}},
+		{name: "pushed authorization without endpoint", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(PushedAuthorizationRequired)}},
+		{name: "pushed authorization disabled but required", client: func(c *Client) {
+			c.Provider = newTestProvider(t, map[string]any{
+				"pushed_authorization_request_endpoint": "https://idp.example.com/par",
+				"require_pushed_authorization_requests": true,
+			})
+		}, opts: []Option{WithPushedAuthorization(PushedAuthorizationDisabled)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

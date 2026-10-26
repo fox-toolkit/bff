@@ -24,8 +24,10 @@ type Provider struct {
 	ctx                context.Context
 	endSessionEndpoint string
 	revocationEndpoint string
+	parEndpoint        string
 	promptValues       []string
 	issParameter       bool
+	requirePAR         bool
 }
 
 // NewProvider retrieves the provider metadata of the issuer with OpenID Connect Discovery. The issuer must use https,
@@ -51,14 +53,17 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		JWKSURI            string   `json:"jwks_uri"`
 		EndSessionEndpoint string   `json:"end_session_endpoint"`
 		RevocationEndpoint string   `json:"revocation_endpoint"`
+		PAREndpoint        string   `json:"pushed_authorization_request_endpoint"`
 		PromptValues       []string `json:"prompt_values_supported"`
 		ISSParameter       bool     `json:"authorization_response_iss_parameter_supported"`
+		RequirePAR         bool     `json:"require_pushed_authorization_requests"`
 	}
 	if err := p.Claims(&metadata); err != nil {
 		return nil, err
 	}
 	endpoints := []string{p.Endpoint().AuthURL, p.Endpoint().TokenURL, metadata.JWKSURI}
-	for _, endpoint := range []string{p.UserInfoEndpoint(), metadata.EndSessionEndpoint, metadata.RevocationEndpoint} {
+	optional := []string{p.UserInfoEndpoint(), metadata.EndSessionEndpoint, metadata.RevocationEndpoint, metadata.PAREndpoint}
+	for _, endpoint := range optional {
 		if endpoint != "" {
 			endpoints = append(endpoints, endpoint)
 		}
@@ -68,6 +73,9 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 			return nil, fmt.Errorf("%w: provider endpoint %q %w", ErrInvalidConfig, endpoint, err)
 		}
 	}
+	if metadata.RequirePAR && metadata.PAREndpoint == "" {
+		return nil, fmt.Errorf("%w: provider requires pushed authorization requests without endpoint", ErrInvalidConfig)
+	}
 
 	return &Provider{
 		oidc:               p,
@@ -76,8 +84,10 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		ctx:                oidc.ClientContext(context.Background(), cfg.client),
 		endSessionEndpoint: metadata.EndSessionEndpoint,
 		revocationEndpoint: metadata.RevocationEndpoint,
+		parEndpoint:        metadata.PAREndpoint,
 		promptValues:       metadata.PromptValues,
 		issParameter:       metadata.ISSParameter,
+		requirePAR:         metadata.RequirePAR,
 	}, nil
 }
 

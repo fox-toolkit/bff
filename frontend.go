@@ -29,6 +29,7 @@ type Frontend struct {
 	refreshGroup          *refreshGroup
 	logger                *slog.Logger
 	postLogoutRedirectURL string
+	parEndpoint           string
 	// partition identifies the frontend, by its issuer and client ID.
 	partition string
 }
@@ -56,6 +57,19 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 	}
 
 	p := client.Provider
+	parEndpoint := p.parEndpoint
+	switch cfg.par {
+	case PushedAuthorizationRequired:
+		if parEndpoint == "" {
+			return nil, fmt.Errorf("%w: provider has no pushed authorization request endpoint", ErrInvalidConfig)
+		}
+	case PushedAuthorizationDisabled:
+		if p.requirePAR {
+			return nil, fmt.Errorf("%w: provider requires pushed authorization requests", ErrInvalidConfig)
+		}
+		parEndpoint = ""
+	}
+
 	sum := sha256.Sum256([]byte(p.issuer + "\x00" + client.ClientID))
 	partition := base64.RawURLEncoding.EncodeToString(sum[:])
 	fe := &Frontend{
@@ -71,6 +85,7 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 			Scopes:       slices.Clone(client.Scopes),
 		},
 		postLogoutRedirectURL: client.PostLogoutRedirectURL,
+		parEndpoint:           parEndpoint,
 		now:                   time.Now,
 		cop:                   http.NewCrossOriginProtection(),
 		logger:                slog.New(cfg.logHandler).With("client_id", client.ClientID),

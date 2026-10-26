@@ -57,6 +57,8 @@ type Options struct {
 	// token issued from it.
 	RotateRefreshTokens bool
 	LoggedOut           bool
+	// PAR advertises the pushed authorization request endpoint.
+	PAR bool
 	// Plain serves the provider over HTTP, for browser tests. It is read once by [NewServer].
 	Plain bool
 }
@@ -72,6 +74,7 @@ type EndSession struct {
 type Server struct {
 	*httptest.Server
 	codes       map[string]grant
+	pushed      map[string]url.Values
 	refresh     map[string]*grant
 	access      map[string]grant
 	revoked     []string
@@ -96,6 +99,7 @@ func NewServer(opts Options) *Server {
 	s := &Server{
 		opts:    opts,
 		codes:   make(map[string]grant),
+		pushed:  make(map[string]url.Values),
 		refresh: make(map[string]*grant),
 		access:  make(map[string]grant),
 	}
@@ -103,6 +107,7 @@ func NewServer(opts Options) *Server {
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.discovery)
 	mux.HandleFunc("GET /jwks", s.jwks)
 	mux.HandleFunc("GET /authorize", s.authorize)
+	mux.HandleFunc("POST /par", s.par)
 	mux.HandleFunc("POST /token", s.token)
 	mux.HandleFunc("GET /userinfo", s.userInfo)
 	mux.HandleFunc("POST /revoke", s.revoke)
@@ -195,6 +200,9 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
 	s.mu.Lock()
+	if s.opts.PAR {
+		doc["pushed_authorization_request_endpoint"] = s.URL + "/par"
+	}
 	maps.Copy(doc, s.opts.Metadata)
 	s.mu.Unlock()
 	maps.DeleteFunc(doc, func(_ string, v any) bool { return v == nil })
@@ -210,8 +218,35 @@ func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
 	}}})
 }
 
+func (s *Server) par(w http.ResponseWriter, r *http.Request) {
+	clientID, ok := s.authenticate(r)
+	if !ok || r.PostForm.Get("client_id") != clientID {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_client"})
+		return
+	}
+	requestURI := "urn:ietf:params:oauth:request_uri:" + randomString()
+	s.mu.Lock()
+	s.pushed[requestURI] = r.PostForm
+	s.mu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]any{"request_uri": requestURI, "expires_in": 60})
+}
+
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if requestURI := q.Get("request_uri"); requestURI != "" {
+		s.mu.Lock()
+		pushed, ok := s.pushed[requestURI]
+		delete(s.pushed, requestURI)
+		s.mu.Unlock()
+		if !ok || pushed.Get("client_id") != q.Get("client_id") {
+			http.Error(w, "invalid request_uri", http.StatusBadRequest)
+			return
+		}
+		q = pushed
+	} else if s.requirePAR() {
+		http.Error(w, "pushed authorization request required", http.StatusBadRequest)
+		return
+	}
 	redirectURI, err := url.Parse(q.Get("redirect_uri"))
 	if err != nil || !redirectURI.IsAbs() {
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
@@ -372,6 +407,13 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) requirePAR() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	required, _ := s.opts.Metadata["require_pushed_authorization_requests"].(bool)
+	return required
 }
 
 // authenticate checks client_secret_basic or client_secret_post and returns the client ID.

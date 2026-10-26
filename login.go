@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -25,7 +26,8 @@ import (
 const (
 	loginTimeout = 15 * time.Minute
 	// maxPendingLogins bounds the login cookies of a browser, which abandoned or forced logins would pile up.
-	maxPendingLogins = 3
+	maxPendingLogins   = 3
+	maxPARResponseSize = 1 << 16
 )
 
 // standardPrompts are accepted when the provider does not advertise its prompt values.
@@ -42,6 +44,10 @@ type loginState struct {
 // LoginHandler returns a handler that starts the authorization code flow with the provider. The optional returnUrl
 // query parameter is a local URL to redirect to after login, "/" by default. The optional prompt query parameter is
 // passed to the provider, such as prompt=none for a silent login.
+//
+// When Pushed Authorization Requests (PAR, RFC 9126) are used, each login sends a request to the pushed authorization
+// request endpoint of the provider, so the route should be rate limited. If this request fails, the handler responds
+// with 502 Bad Gateway.
 func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 	return func(c *fox.Context) {
 		r := c.Request()
@@ -71,6 +77,29 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 			ReturnURL: returnURL,
 			Created:   fe.now().UnixNano(),
 		}
+		params := url.Values{
+			"response_type":         {"code"},
+			"client_id":             {fe.oauth2.ClientID},
+			"redirect_uri":          {fe.oauth2.RedirectURL},
+			"scope":                 {strings.Join(fe.oauth2.Scopes, " ")},
+			"state":                 {state},
+			"nonce":                 {ls.Nonce},
+			"code_challenge":        {oauth2.S256ChallengeFromVerifier(ls.Verifier)},
+			"code_challenge_method": {"S256"},
+		}
+		if prompt != "" {
+			params.Set("prompt", prompt)
+		}
+		if fe.parEndpoint != "" {
+			requestURI, err := fe.pushAuthorizationRequest(r.Context(), params)
+			if err != nil {
+				fe.logFailed(r, "pushed authorization request", err)
+				http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+				return
+			}
+			params = url.Values{"client_id": {fe.oauth2.ClientID}, "request_uri": {requestURI}}
+		}
+
 		fe.trimPendingLogins(w.Header(), r.Cookies())
 		data, err := json.Marshal(ls)
 		if err == nil {
@@ -82,12 +111,54 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 			return
 		}
 
-		opts := []oauth2.AuthCodeOption{oidc.Nonce(ls.Nonce), oauth2.S256ChallengeOption(ls.Verifier)}
-		if prompt != "" {
-			opts = append(opts, oauth2.SetAuthURLParam("prompt", prompt))
+		authURL := fe.oauth2.Endpoint.AuthURL
+		sep := "?"
+		if strings.Contains(authURL, "?") {
+			sep = "&"
 		}
-		http.Redirect(w, r, fe.oauth2.AuthCodeURL(state, opts...), http.StatusFound)
+		http.Redirect(w, r, authURL+sep+params.Encode(), http.StatusFound)
 	}
+}
+
+// pushAuthorizationRequest pushes the authorization request to the provider, as defined by RFC 9126, and returns its
+// request URI.
+func (fe *Frontend) pushAuthorizationRequest(ctx context.Context, params url.Values) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fe.parEndpoint, strings.NewReader(params.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// RFC 6749 2.3.1: the client credentials are form-encoded before being used for basic authentication.
+	req.SetBasicAuth(url.QueryEscape(fe.oauth2.ClientID), url.QueryEscape(fe.oauth2.ClientSecret))
+
+	resp, err := fe.provider.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPARResponseSize))
+	if err != nil {
+		return "", err
+	}
+	// RFC 9126 2.2 defines 201 Created, some providers respond with 200 OK.
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		_ = json.Unmarshal(body, &e)
+		return "", fmt.Errorf("unexpected status %d: %s %s", resp.StatusCode, e.Error, e.Description)
+	}
+	var res struct {
+		RequestURI string `json:"request_uri"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", err
+	}
+	if res.RequestURI == "" {
+		return "", errors.New("no request uri")
+	}
+	return res.RequestURI, nil
 }
 
 // trimPendingLogins deletes the login cookies of the oldest pending logins, keeping room for a new one.

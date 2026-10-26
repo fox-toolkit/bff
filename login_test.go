@@ -106,6 +106,62 @@ func TestLogin(t *testing.T) {
 	assert.Contains(t, lines[0], "Max-Age=900; HttpOnly; Secure; SameSite=Lax")
 }
 
+func TestLoginPushedAuthorization(t *testing.T) {
+	cases := []struct {
+		name   string
+		opts   oidctest.Options
+		mode   PushedAuthorization
+		pushed bool
+	}{
+		{name: "if available", opts: oidctest.Options{PAR: true}, mode: PushedAuthorizationIfAvailable, pushed: true},
+		{name: "required by provider", opts: oidctest.Options{PAR: true, Metadata: map[string]any{"require_pushed_authorization_requests": true}}, pushed: true},
+		{name: "required", opts: oidctest.Options{PAR: true}, mode: PushedAuthorizationRequired, pushed: true},
+		{name: "disabled", opts: oidctest.Options{PAR: true}, mode: PushedAuthorizationDisabled},
+		{name: "not available", mode: PushedAuthorizationIfAvailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, tc.opts, WithPushedAuthorization(tc.mode))
+			rec, callback := e.startLogin(t, "prompt=login&returnUrl=/orders")
+			authorize, err := url.Parse(rec.Header().Get("Location"))
+			require.NoError(t, err)
+			q := authorize.Query()
+			if tc.pushed {
+				assert.Len(t, q, 2)
+				assert.Equal(t, "app", q.Get("client_id"))
+				assert.True(t, strings.HasPrefix(q.Get("request_uri"), "urn:ietf:params:oauth:request_uri:"))
+			} else {
+				assert.Empty(t, q.Get("request_uri"))
+				assert.Equal(t, "login", q.Get("prompt"))
+			}
+
+			res := e.serve(callback, requestCookies(t, rec.Header()))
+			require.Equal(t, http.StatusFound, res.Code)
+			assert.Equal(t, "/orders", res.Header().Get("Location"))
+		})
+	}
+}
+
+func TestLoginPushedAuthorizationFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		update func(e *testEnv)
+	}{
+		{name: "not found", update: func(e *testEnv) { e.fe.parEndpoint = e.idp.URL + "/missing" }},
+		{name: "invalid client", update: func(e *testEnv) { e.fe.oauth2.ClientSecret = "other" }},
+		{name: "unreachable", update: func(e *testEnv) { e.idp.Close() }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{PAR: true})
+			tc.update(e)
+			rec := e.serve("/bff/login", nil)
+			assert.Equal(t, http.StatusBadGateway, rec.Code)
+			assert.Empty(t, rec.Header().Values("Set-Cookie"))
+		})
+	}
+}
+
 func TestCallback(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
 		var opts []Option

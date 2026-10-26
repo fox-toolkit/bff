@@ -45,6 +45,7 @@ type config struct {
 	idleTimeout     time.Duration
 	absoluteTimeout time.Duration
 	userInfo        bool
+	par             PushedAuthorization
 }
 
 func defaultConfig() *config {
@@ -106,6 +107,34 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 func WithUserInfo() Option {
 	return optionFunc(func(c *config) error {
 		c.userInfo = true
+		return nil
+	})
+}
+
+// PushedAuthorization defines when a [Frontend] pushes its authorization requests to the provider, as defined by
+// RFC 9126.
+type PushedAuthorization uint8
+
+const (
+	// PushedAuthorizationIfAvailable pushes the authorization requests when the provider has a pushed authorization
+	// request endpoint.
+	PushedAuthorizationIfAvailable PushedAuthorization = iota
+	// PushedAuthorizationRequired pushes the authorization requests. [NewFrontend] fails if the provider has no pushed
+	// authorization request endpoint.
+	PushedAuthorizationRequired
+	// PushedAuthorizationDisabled never pushes the authorization requests. [NewFrontend] fails if the provider requires
+	// pushed authorization requests.
+	PushedAuthorizationDisabled
+)
+
+// WithPushedAuthorization sets when the authorization requests are pushed to the provider. The default is
+// [PushedAuthorizationIfAvailable].
+func WithPushedAuthorization(mode PushedAuthorization) Option {
+	return optionFunc(func(c *config) error {
+		if mode > PushedAuthorizationDisabled {
+			return fmt.Errorf("%w: invalid pushed authorization mode", ErrInvalidConfig)
+		}
+		c.par = mode
 		return nil
 	})
 }
