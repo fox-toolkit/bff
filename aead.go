@@ -4,8 +4,8 @@
 
 package bff
 
-// AEAD provides authenticated encryption with associated data. A [Frontend] uses it to encrypt its sessions. Its
-// method set matches tink.AEAD. Key rotation is the responsibility of the implementation.
+// AEAD provides authenticated encryption with associated data. A [Frontend] uses it to encrypt its sessions. Key
+// rotation is the responsibility of the implementation.
 type AEAD interface {
 	Encrypt(plaintext, associatedData []byte) ([]byte, error)
 	Decrypt(ciphertext, associatedData []byte) ([]byte, error)
