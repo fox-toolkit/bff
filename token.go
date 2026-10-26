@@ -29,26 +29,22 @@ func AccessToken(ctx context.Context) (*oauth2.Token, bool) {
 }
 
 // Transport returns an [http.RoundTripper] that sets the Authorization header from the access token of the request
-// context, as returned by [AccessToken]. A request without access token is sent unchanged. A nil base uses
-// [http.DefaultTransport].
+// context, as returned by [AccessToken], and the DPoP proof of a DPoP-bound access token. A request without access
+// token is sent unchanged. A nil base uses [http.DefaultTransport].
 func Transport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &transport{base: base}
+	return &transport{base: base, nonces: newNonceCache()}
 }
 
 type transport struct {
-	base http.RoundTripper
+	base   http.RoundTripper
+	nonces *nonceCache
 }
 
 func (t *transport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if token, ok := AccessToken(r.Context()); ok && !crossHostRedirect(r) {
-		// A RoundTripper must not modify the request it is given.
-		r = r.Clone(r.Context())
-		token.SetAuthHeader(r)
-	}
-	resp, err := t.base.RoundTrip(r)
+	resp, err := t.send(r)
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +52,25 @@ func (t *transport) RoundTrip(r *http.Request) (*http.Response, error) {
 	// the connection.
 	removeOwnSetCookies(resp.Header)
 	return resp, nil
+}
+
+func (t *transport) send(r *http.Request) (*http.Response, error) {
+	st, ok := r.Context().Value(sessionKey{}).(*requestState)
+	if !ok || st.session == nil || st.session.AccessToken == "" || crossHostRedirect(r) {
+		return t.base.RoundTrip(r)
+	}
+	s := st.session
+	if s.DPoPKey != nil {
+		key, err := parseDPoPKey(s.DPoPKey)
+		if err != nil {
+			return nil, err
+		}
+		return sendDPoP(t.base, t.nonces, key, r, s.AccessToken, time.Now())
+	}
+	// A RoundTripper must not modify the request it is given.
+	r = r.Clone(r.Context())
+	(&oauth2.Token{AccessToken: s.AccessToken, TokenType: s.TokenType}).SetAuthHeader(r)
+	return t.base.RoundTrip(r)
 }
 
 // crossHostRedirect reports whether r follows a redirect to another host than the original request. The access token

@@ -5,6 +5,7 @@
 package bff
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -70,6 +71,10 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		parEndpoint = ""
 	}
 
+	if cfg.dpop && len(p.dpopAlgs) > 0 && !slices.Contains(p.dpopAlgs, dpopAlg) {
+		return nil, fmt.Errorf("%w: provider does not support dpop with %s", ErrInvalidConfig, dpopAlg)
+	}
+
 	sum := sha256.Sum256([]byte(p.issuer + "\x00" + client.ClientID))
 	partition := base64.RawURLEncoding.EncodeToString(sum[:])
 	fe := &Frontend{
@@ -93,6 +98,22 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 	}
 	fe.refreshGroup = newRefreshGroup(func() time.Time { return fe.now() })
 	return fe, nil
+}
+
+// providerContext returns ctx with the HTTP client of the provider, which sends DPoP proofs of the key when it is not
+// nil.
+func (fe *Frontend) providerContext(ctx context.Context, key *dpopKey) context.Context {
+	client := fe.provider.client
+	if key != nil {
+		base := client.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		c := *client
+		c.Transport = &dpopTransport{base: base, key: key, nonces: fe.provider.nonces, now: fe.now}
+		client = &c
+	}
+	return oidc.ClientContext(ctx, client)
 }
 
 // logRejected logs a request rejected because it is invalid.

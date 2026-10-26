@@ -37,6 +37,7 @@ type loginState struct {
 	Verifier  string `json:"v"`
 	Nonce     string `json:"n"`
 	ReturnURL string `json:"r"`
+	DPoPKey   []byte `json:"k,omitempty"`
 	// Created is in nanoseconds, so logins started in the same second are ordered.
 	Created int64 `json:"t"`
 }
@@ -89,6 +90,17 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		}
 		if prompt != "" {
 			params.Set("prompt", prompt)
+		}
+		if fe.cfg.dpop {
+			key, raw, err := newDPoPKey()
+			if err != nil {
+				fe.logFailed(r, "dpop key", err)
+				internalError(w)
+				return
+			}
+			ls.DPoPKey = raw
+			// RFC 9449 10: the authorization code is bound to the key.
+			params.Set("dpop_jkt", key.jkt)
 		}
 		if fe.parEndpoint != "" {
 			requestURI, err := fe.pushAuthorizationRequest(r.Context(), params)
@@ -280,10 +292,20 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 var errInvalidLogin = errors.New("invalid login")
 
 func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*session, error) {
-	ctx := oidc.ClientContext(r.Context(), fe.provider.client)
+	var key *dpopKey
+	if fe.cfg.dpop {
+		var err error
+		if key, err = parseDPoPKey(ls.DPoPKey); err != nil {
+			return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
+		}
+	}
+	ctx := fe.providerContext(r.Context(), key)
 	token, err := fe.oauth2.Exchange(ctx, code, oauth2.VerifierOption(ls.Verifier))
 	if err != nil {
 		return nil, err
+	}
+	if key != nil && !isDPoP(token.TokenType) {
+		return nil, errNotDPoPBound
 	}
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok {
@@ -308,6 +330,7 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	s.Subject = idToken.Subject
 	s.SID = claims.SID
 	s.IDToken = rawIDToken
+	s.DPoPKey = ls.DPoPKey
 	s.setToken(token, now)
 
 	if fe.cfg.userInfo {

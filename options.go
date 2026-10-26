@@ -45,6 +45,7 @@ type config struct {
 	idleTimeout     time.Duration
 	absoluteTimeout time.Duration
 	userInfo        bool
+	dpop            bool
 	par             PushedAuthorization
 }
 
@@ -107,6 +108,15 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 func WithUserInfo() Option {
 	return optionFunc(func(c *config) error {
 		c.userInfo = true
+		return nil
+	})
+}
+
+// WithDPoP binds the access tokens to a key generated for each session, as defined by RFC 9449. The remote APIs must
+// accept DPoP-bound access tokens.
+func WithDPoP() Option {
+	return optionFunc(func(c *config) error {
+		c.dpop = true
 		return nil
 	})
 }

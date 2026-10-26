@@ -8,12 +8,14 @@ package oidctest
 
 import (
 	"cmp"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +53,8 @@ type Options struct {
 	ISS     string
 	Subject string
 	SID     string
+	// DPoPNonce is the nonce the token endpoint requires in the DPoP proofs, when it is not empty.
+	DPoPNonce string
 	// AccessTokenTTL is the lifetime of the access tokens. The default is 5 minutes.
 	AccessTokenTTL time.Duration
 	// RotateRefreshTokens issues a new refresh token on every refresh. Reusing a refresh token then revokes every
@@ -59,6 +63,8 @@ type Options struct {
 	LoggedOut           bool
 	// PAR advertises the pushed authorization request endpoint.
 	PAR bool
+	// IgnoreDPoP issues bearer access tokens to the requests with a DPoP proof.
+	IgnoreDPoP bool
 	// Plain serves the provider over HTTP, for browser tests. It is read once by [NewServer].
 	Plain bool
 }
@@ -86,6 +92,8 @@ type Server struct {
 type grant struct {
 	family      *bool // set to true when the family is revoked
 	clientID    string
+	dpopJKT     string
+	jkt         string
 	redirectURI string
 	nonce       string
 	challenge   string
@@ -273,6 +281,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 			redirectURI: q.Get("redirect_uri"),
 			nonce:       q.Get("nonce"),
 			challenge:   q.Get("code_challenge"),
+			dpopJKT:     q.Get("dpop_jkt"),
 			subject:     s.opts.Subject,
 			sid:         s.opts.SID,
 		}
@@ -291,6 +300,21 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var jkt string
+	if r.Header.Get("DPoP") != "" && !s.opts.IgnoreDPoP {
+		var err error
+		jkt, err = VerifyDPoPProof(r, "", s.opts.DPoPNonce)
+		if errors.Is(err, ErrDPoPNonce) {
+			w.Header().Set("DPoP-Nonce", s.opts.DPoPNonce)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "use_dpop_nonce"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_dpop_proof"})
+			return
+		}
+	}
+
 	var g grant
 	switch r.PostForm.Get("grant_type") {
 	case "authorization_code":
@@ -298,7 +322,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		g, ok = s.codes[code]
 		delete(s.codes, code)
 		if !ok || g.clientID != clientID || g.redirectURI != r.PostForm.Get("redirect_uri") ||
-			!verifyChallenge(r.PostForm.Get("code_verifier"), g.challenge) {
+			!verifyChallenge(r.PostForm.Get("code_verifier"), g.challenge) || g.dpopJKT != "" && !s.opts.IgnoreDPoP && g.dpopJKT != jkt {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 			return
 		}
@@ -322,6 +346,11 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	g.jkt = jkt
+	tokenType := "Bearer"
+	if jkt != "" {
+		tokenType = "DPoP"
+	}
 	now := time.Now()
 	ttl := s.opts.AccessTokenTTL
 	if ttl == 0 {
@@ -354,7 +383,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  accessToken,
-		"token_type":    "Bearer",
+		"token_type":    tokenType,
 		"expires_in":    int(ttl.Seconds()),
 		"refresh_token": refreshToken,
 		"id_token":      s.Sign("JWT", claims),
@@ -362,10 +391,16 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) userInfo(w http.ResponseWriter, r *http.Request) {
-	token, ok := bearerToken(r)
+	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, found := s.access[token]
+	if found && g.jkt != "" {
+		jkt, err := VerifyDPoPProof(r, token, "")
+		ok = ok && scheme == "DPoP" && err == nil && jkt == g.jkt
+	} else {
+		ok = ok && strings.EqualFold(scheme, "Bearer")
+	}
 	if !ok || !found {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -436,9 +471,56 @@ func verifyChallenge(verifier, challenge string) bool {
 	return verifier != "" && base64.RawURLEncoding.EncodeToString(sum[:]) == challenge
 }
 
-func bearerToken(r *http.Request) (string, bool) {
-	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
-	return token, ok && strings.EqualFold(scheme, "Bearer") && token != ""
+// ErrDPoPNonce is returned by [VerifyDPoPProof] when the proof does not have the required nonce.
+var ErrDPoPNonce = errors.New("dpop nonce required")
+
+// VerifyDPoPProof verifies the DPoP proof of a request received by a server, as defined by RFC 9449 4.3, and returns
+// the JWK thumbprint of its key. The proof must be bound to the access token and have the nonce when they are not empty.
+func VerifyDPoPProof(r *http.Request, accessToken, nonce string) (string, error) {
+	jws, err := jose.ParseSigned(r.Header.Get("DPoP"), []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return "", err
+	}
+	header := jws.Signatures[0].Protected
+	jwk := header.JSONWebKey
+	if header.ExtraHeaders[jose.HeaderType] != "dpop+jwt" || jwk == nil || !jwk.IsPublic() {
+		return "", errors.New("invalid proof header")
+	}
+	payload, err := jws.Verify(jwk)
+	if err != nil {
+		return "", err
+	}
+	var claims struct {
+		JTI   string `json:"jti"`
+		HTM   string `json:"htm"`
+		HTU   string `json:"htu"`
+		ATH   string `json:"ath"`
+		Nonce string `json:"nonce"`
+		IAT   int64  `json:"iat"`
+	}
+	if err = json.Unmarshal(payload, &claims); err != nil {
+		return "", err
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	sum := sha256.Sum256([]byte(accessToken))
+	switch {
+	case claims.JTI == "", claims.HTM != r.Method, claims.HTU != scheme+"://"+r.Host+r.URL.EscapedPath():
+		return "", errors.New("invalid proof claims")
+	case time.Since(time.Unix(claims.IAT, 0)).Abs() > time.Minute:
+		return "", errors.New("proof expired")
+	case accessToken != "" && claims.ATH != base64.RawURLEncoding.EncodeToString(sum[:]):
+		return "", errors.New("proof not bound to the access token")
+	case nonce != "" && claims.Nonce != nonce:
+		return "", ErrDPoPNonce
+	}
+	thumbprint, err := jwk.Thumbprint(crypto.SHA256)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(thumbprint), nil
 }
 
 func randomString() string {

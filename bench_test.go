@@ -5,6 +5,7 @@
 package bff
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -39,6 +40,36 @@ func BenchmarkMiddleware(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				e.router.ServeHTTP(new(discardWriter), req)
+			}
+		})
+	}
+}
+
+type okTransport struct{}
+
+func (okTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+}
+
+func BenchmarkTransport(b *testing.B) {
+	_, raw, err := newDPoPKey()
+	require.NoError(b, err)
+	for _, tc := range []struct {
+		name string
+		s    *session
+	}{
+		{name: "bearer", s: &session{AccessToken: "access-token", TokenType: "Bearer"}},
+		{name: "dpop", s: &session{AccessToken: "access-token", TokenType: "DPoP", DPoPKey: raw}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			rt := Transport(okTransport{})
+			ctx := context.WithValue(b.Context(), sessionKey{}, &requestState{session: tc.s})
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example.com/orders", nil)
+			require.NoError(b, err)
+
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = rt.RoundTrip(req)
 			}
 		})
 	}

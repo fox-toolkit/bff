@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 )
@@ -95,7 +94,7 @@ func (g *refreshGroup) remember(key [sha256.Size]byte, res refreshResult) {
 // refresh renews the tokens of s. It returns errSessionEnded when the provider rejects the refresh token.
 func (fe *Frontend) refresh(ctx context.Context, s *session) error {
 	res, err := fe.refreshGroup.Do(s.RefreshToken, func() (refreshResult, error) {
-		return fe.redeem(ctx, s.RefreshToken, s.Subject)
+		return fe.redeem(ctx, s)
 	})
 	if err != nil {
 		return err
@@ -108,24 +107,34 @@ func (fe *Frontend) refresh(ctx context.Context, s *session) error {
 	return nil
 }
 
-func (fe *Frontend) redeem(ctx context.Context, refreshToken, subject string) (refreshResult, error) {
+func (fe *Frontend) redeem(ctx context.Context, s *session) (refreshResult, error) {
+	var key *dpopKey
+	if s.DPoPKey != nil {
+		var err error
+		if key, err = parseDPoPKey(s.DPoPKey); err != nil {
+			return refreshResult{}, err
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
-	ctx = oidc.ClientContext(ctx, fe.provider.client)
+	ctx = fe.providerContext(ctx, key)
 
-	token, err := fe.oauth2.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken}).Token()
+	token, err := fe.oauth2.TokenSource(ctx, &oauth2.Token{RefreshToken: s.RefreshToken}).Token()
 	if err != nil {
 		if re, ok := errors.AsType[*oauth2.RetrieveError](err); ok && re.ErrorCode == "invalid_grant" {
 			return refreshResult{}, errSessionEnded
 		}
 		return refreshResult{}, err
 	}
+	if key != nil && !isDPoP(token.TokenType) {
+		return refreshResult{}, errNotDPoPBound
+	}
 
 	rawIDToken, _ := token.Extra("id_token").(string)
 	if rawIDToken != "" {
 		// OpenID Connect Core 12.2: a refreshed ID token must be valid and keep the same subject.
 		idToken, err := fe.verifyIDToken(ctx, rawIDToken)
-		if err != nil || idToken.Subject != subject {
+		if err != nil || idToken.Subject != s.Subject {
 			return refreshResult{}, errSessionEnded
 		}
 	}

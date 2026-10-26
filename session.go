@@ -33,6 +33,7 @@ type session struct {
 	// LogoutCSRFToken protects the logout handler against cross-site requests.
 	LogoutCSRFToken string          `json:"lt"`
 	UserInfo        json.RawMessage `json:"ui,omitempty"`
+	DPoPKey         []byte          `json:"dk,omitempty"`
 	Version         int             `json:"v"`
 	// Expiry is the expiration time of the access token, and Lifetime its lifetime in seconds when it was issued.
 	Expiry   int64 `json:"exp,omitzero"`
