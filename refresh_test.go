@@ -6,6 +6,7 @@ package bff
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -131,6 +132,7 @@ func TestRefreshedIDToken(t *testing.T) {
 		{name: "auth_time changed", login: map[string]any{"auth_time": 1000}, refresh: map[string]any{"auth_time": 2000}, code: http.StatusUnauthorized},
 		{name: "nonce changed", refresh: map[string]any{"nonce": "other"}, code: http.StatusUnauthorized},
 		{name: "sub changed", refresh: map[string]any{"sub": "other"}, code: http.StatusUnauthorized},
+		{name: "aud as an array", refresh: map[string]any{"aud": []string{"app"}}, code: http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,5 +145,40 @@ func TestRefreshedIDToken(t *testing.T) {
 			assert.Equal(t, tc.code, e.do(http.MethodGet, "/api", cookies, nil).Code)
 			assert.Equal(t, tc.code == http.StatusUnauthorized, len(e.idp.Revoked()) == 1)
 		})
+	}
+}
+
+func TestRefreshedIDTokenComparedWithLogin(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{Claims: map[string]any{"auth_time": 1000}})
+	e.mount(t, "/api")
+	cookies := e.loggedIn(t)
+
+	e.idp.Update(func(o *oidctest.Options) { o.Claims = map[string]any{"auth_time": nil} })
+	e.skipAhead(5 * time.Minute)
+	rec := e.do(http.MethodGet, "/api", cookies, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	cookies = requestCookies(t, rec.Header())
+
+	e.idp.Update(func(o *oidctest.Options) { o.Claims = map[string]any{"auth_time": 2000} })
+	e.skipAhead(10 * time.Minute)
+	assert.Equal(t, http.StatusUnauthorized, e.do(http.MethodGet, "/api", cookies, nil).Code)
+}
+
+func TestAudience(t *testing.T) {
+	cases := []struct {
+		data    string
+		want    audience
+		invalid bool
+	}{
+		{data: `null`},
+		{data: `"app"`, want: audience{"app"}},
+		{data: `["app","other"]`, want: audience{"app", "other"}},
+		{data: `1`, invalid: true},
+	}
+	for _, tc := range cases {
+		var a audience
+		err := json.Unmarshal([]byte(tc.data), &a)
+		assert.Equal(t, tc.invalid, err != nil)
+		assert.Equal(t, tc.want, a)
 	}
 }

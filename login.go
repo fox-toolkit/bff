@@ -354,6 +354,7 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	}
 	var claims struct {
 		SID string `json:"sid"`
+		authentication
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
@@ -364,6 +365,7 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	s.Subject = idToken.Subject
 	s.SID = claims.SID
 	s.IDToken = rawIDToken
+	s.Authentication = claims.authentication
 	s.DPoPKey = ls.DPoPKey
 	s.setToken(token, now)
 

@@ -157,8 +157,9 @@ func (fe *Frontend) sendRevocation(ctx context.Context, refreshToken string) (*h
 
 // retryAfter returns the delay of a Retry-After header value, in seconds or as a date, or one second when it has none.
 func retryAfter(value string, now time.Time) time.Duration {
-	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		// A delay beyond the revocation timeout gives up the retry, whatever its value.
+		return time.Duration(min(seconds, int64(revocationTimeout/time.Second)+1)) * time.Second
 	}
 	if t, err := http.ParseTime(value); err == nil {
 		return max(t.Sub(now), 0)

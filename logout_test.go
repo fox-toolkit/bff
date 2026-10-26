@@ -364,10 +364,11 @@ func TestRetryAfter(t *testing.T) {
 		{value: "", want: time.Second},
 		{value: "3", want: 3 * time.Second},
 		{value: "-1", want: time.Second},
+		{value: "9223372037", want: revocationTimeout + time.Second},
 		{value: now.Add(5 * time.Second).Format(http.TimeFormat), want: 5 * time.Second},
 		{value: now.Add(-5 * time.Second).Format(http.TimeFormat), want: 0},
 	}
 	for _, tc := range cases {
-		assert.Equal(t, tc.want, retryAfter(tc.value, now), tc.value)
+		assert.Equal(t, tc.want, retryAfter(tc.value, now))
 	}
 }

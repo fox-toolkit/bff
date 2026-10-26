@@ -325,6 +325,7 @@ func TestCallbackInvalid(t *testing.T) {
 		{name: "audience mismatch", opts: oidctest.Options{Claims: map[string]any{"aud": "other"}}},
 		{name: "expired id token", opts: oidctest.Options{Claims: map[string]any{"exp": time.Now().Add(-time.Hour).Unix()}}},
 		{name: "azp mismatch", opts: oidctest.Options{Claims: map[string]any{"azp": "other"}}},
+		{name: "auth_time not a number", opts: oidctest.Options{Claims: map[string]any{"auth_time": "1000"}}},
 		{name: "several audiences without azp", opts: oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}}}},
 		{name: "missing sub", opts: oidctest.Options{Claims: map[string]any{"sub": nil}}},
 		{name: "missing iat", opts: oidctest.Options{Claims: map[string]any{"iat": nil}}},

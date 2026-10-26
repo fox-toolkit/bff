@@ -289,47 +289,44 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 }
 
 // sameAuthentication checks that a refreshed ID token keeps the subject, audience, authentication time and nonce of
-// the ID token of the session, as required by OpenID Connect Core 12.2.
+// the login ID token, as required by OpenID Connect Core 12.2.
 func sameAuthentication(s *session, idToken *oidc.IDToken) error {
 	if idToken.Subject != s.Subject {
 		return errors.New("sub changed")
 	}
-	payload, err := s.idTokenPayload()
-	if err != nil {
-		return err
-	}
-	var prev, cur authentication
-	if err := json.Unmarshal(payload, &prev); err != nil {
-		return err
-	}
+	var cur authentication
 	if err := idToken.Claims(&cur); err != nil {
 		return err
 	}
+	login := s.Authentication
 	switch {
-	case !slices.Equal(slices.Sorted(slices.Values(prev.Audience)), slices.Sorted(slices.Values(cur.Audience))):
+	case !slices.Equal(slices.Sorted(slices.Values(login.Audience)), slices.Sorted(slices.Values(cur.Audience))):
 		return errors.New("aud changed")
-	case cur.AuthTime != 0 && prev.AuthTime != 0 && cur.AuthTime != prev.AuthTime:
+	case cur.AuthTime != 0 && login.AuthTime != 0 && cur.AuthTime != login.AuthTime:
 		return errors.New("auth_time changed")
-	case cur.Nonce != "" && cur.Nonce != prev.Nonce:
+	case cur.Nonce != "" && cur.Nonce != login.Nonce:
 		return errors.New("nonce changed")
 	}
 	return nil
 }
 
 type authentication struct {
-	Nonce    string   `json:"nonce"`
-	Audience audience `json:"aud"`
-	AuthTime float64  `json:"auth_time"`
+	Nonce    string   `json:"nonce,omitempty"`
+	Audience audience `json:"aud,omitempty"`
+	AuthTime float64  `json:"auth_time,omitzero"`
 }
 
 // audience is the aud claim, a string or an array of strings.
 type audience []string
 
 func (a *audience) UnmarshalJSON(data []byte) error {
-	var one string
-	if json.Unmarshal(data, &one) == nil {
-		*a = audience{one}
+	if json.Unmarshal(data, (*[]string)(a)) == nil {
 		return nil
 	}
-	return json.Unmarshal(data, (*[]string)(a))
+	var one string
+	if err := json.Unmarshal(data, &one); err != nil {
+		return err
+	}
+	*a = audience{one}
+	return nil
 }

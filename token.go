@@ -260,6 +260,9 @@ func (rs *requestState) write(ctx context.Context) error {
 
 // end deletes the session, which the request no longer has.
 func (rs *requestState) end(ctx context.Context) {
+	// The token request may have used up the time of ctx.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
+	defer cancel()
 	rs.fe.tokens.Forget(rs.session.LogoutCSRFToken)
 	rs.session = nil
 	c := &rs.cookies

@@ -631,6 +631,13 @@ func (s ctxStore) Update(ctx context.Context, id string, r store.Record) error {
 	return s.mapStore.Update(ctx, id, r)
 }
 
+func (s ctxStore) Delete(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.mapStore.Delete(ctx, id)
+}
+
 // cancelOnRefresh cancels the request that started a refresh token grant once the provider responded.
 type cancelOnRefresh struct {
 	base   http.RoundTripper
@@ -683,6 +690,20 @@ func TestResourceCanceledRequest(t *testing.T) {
 	e.skipAhead(2 * time.Minute)
 	e.do(http.MethodGet, "/r1", cookies, nil)
 	assert.NoError(t, <-errs)
+}
+
+func TestResourceEndCanceledContext(t *testing.T) {
+	ms := &mapStore{records: make(map[string]store.Record)}
+	e := newTestEnv(t, oidctest.Options{}, WithStore(ctxStore{ms}))
+	cookies := e.loggedIn(t)
+	s, st, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rs := &requestState{fe: e.fe, session: s, st: st}
+	rs.end(ctx)
+	assert.Empty(t, ms.records)
 }
 
 func TestResourceBearerUnderDPoP(t *testing.T) {
