@@ -26,7 +26,23 @@ jobs:
           persist-credentials: false
 
       - name: Run tests
-        run: go test -v -coverprofile=coverage.txt -covermode=atomic ./...
+        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+      - name: Fuzz smoke
+        run: |
+          for t in FuzzCookieRead FuzzDecodeSession FuzzLocalURL FuzzVerifyLogoutToken; do
+            echo "::group::${t}"
+            go test -run '^$' -fuzz="^${t}$" -fuzztime=20s .
+            echo "::endgroup::"
+          done
+
+      - name: Upload fuzz crashers on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: testdata/fuzz/
+          if-no-files-found: ignore
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
