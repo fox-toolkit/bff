@@ -76,7 +76,12 @@ func main() {
 	// Proxy to the resource server, with the user's access token.
 	f.MustAdd(fox.MethodAny, "/api/*{path}", fox.WrapH(proxy), fox.WithMiddleware(fe.Authenticate()))
 
-	// The browser application, served from the same origin as the BFF.
+	// The frontend must be served from the same origin as the BFF, here directly by the BFF. 
+	// Other setups work too, for example:
+	//  - Reverse proxy in front: an ingress or a load balancer routes /bff/* and /api/* to the BFF, and the other paths
+	//    to a static file server or a CDN.
+	//  - BFF as reverse proxy: the BFF forwards the other paths to the frontend server, for example the Vite dev server.
+	//  - index.html from the BFF: the BFF serves index.html, and the static assets are loaded from a CDN.
 	f.MustAdd(fox.MethodGet, "/*{filepath}", fox.WrapH(http.FileServer(http.Dir("dist"))))
 	
 	log.Fatal(http.ListenAndServeTLS(":8443", "cert.pem", "key.pem", f))
@@ -116,7 +121,7 @@ refresh token, Back-Channel Logout and RP-Initiated Logout with a client secret.
 fe, err := bff.NewFrontend(bff.Client{
 	Provider:    provider,
 	ClientID:    "app",
-	ClientKey:   key, // EC P-256, RSA or Ed25519 private key, its public key registered at the provider
+	ClientKey:   key, // EC P-256, RSA or Ed25519 private key
 	RedirectURL: "https://app.example.com/bff/callback",
 	Scopes:      []string{"openid"},
 }, aead,
