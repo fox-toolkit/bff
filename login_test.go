@@ -425,6 +425,16 @@ func TestCallbackDeletesSessionsOfSameSID(t *testing.T) {
 	}
 }
 
+func TestCallbackSigningAlgorithms(t *testing.T) {
+	metadata := map[string]any{"id_token_signing_alg_values_supported": []string{"RS256", "PS256"}}
+	for alg, code := range map[string]int{"RS256": http.StatusFound, "PS256": http.StatusBadRequest} {
+		t.Run(alg, func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{Metadata: metadata}, WithSigningAlgorithms(alg))
+			assert.Equal(t, code, e.login(t, "", nil).Code)
+		})
+	}
+}
+
 func TestCallbackSeveralAudiencesWithAZP(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}, "azp": "app"}})
 	assert.Equal(t, http.StatusFound, e.login(t, "", nil).Code)

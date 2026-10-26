@@ -75,13 +75,18 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		return nil, fmt.Errorf("%w: provider does not support dpop with %s", ErrInvalidConfig, dpopAlg)
 	}
 
+	if len(cfg.signingAlgs) > 0 && len(p.idTokenAlgs) > 0 &&
+		!slices.ContainsFunc(cfg.signingAlgs, func(alg string) bool { return slices.Contains(p.idTokenAlgs, alg) }) {
+		return nil, fmt.Errorf("%w: no signing algorithm in common with the provider", ErrInvalidConfig)
+	}
+
 	sum := sha256.Sum256([]byte(p.issuer + "\x00" + client.ClientID))
 	partition := base64.RawURLEncoding.EncodeToString(sum[:])
 	fe := &Frontend{
 		cfg:      cfg,
 		aead:     scopedAEAD{AEAD: aead, scope: partition},
 		provider: p,
-		verifier: p.oidc.VerifierContext(p.ctx, &oidc.Config{ClientID: client.ClientID}),
+		verifier: p.oidc.VerifierContext(p.ctx, &oidc.Config{ClientID: client.ClientID, SupportedSigningAlgs: cfg.signingAlgs}),
 		oauth2: oauth2.Config{
 			ClientID:     client.ClientID,
 			ClientSecret: client.ClientSecret,

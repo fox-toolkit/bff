@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/fox-toolkit/bff/store"
 	"github.com/fox-toolkit/fox"
 	"golang.org/x/net/http/httpguts"
@@ -42,6 +44,7 @@ type config struct {
 	unauthorized     fox.HandlerFunc
 	csrfHeader       string
 	csrfValue        string
+	signingAlgs      []string
 	idleTimeout      time.Duration
 	absoluteTimeout  time.Duration
 	userInfo         bool
@@ -120,6 +123,27 @@ func WithDPoP(enable bool) Option {
 		c.dpop = enable
 		return nil
 	})
+}
+
+// WithSigningAlgorithms restricts the algorithms accepted for the signature of the ID tokens and logout tokens. By
+// default, the algorithms advertised by the provider are accepted.
+func WithSigningAlgorithms(algs ...string) Option {
+	return optionFunc(func(c *config) error {
+		for _, alg := range algs {
+			if !slices.Contains(signingAlgs, alg) {
+				return fmt.Errorf("%w: unsupported signing algorithm %q", ErrInvalidConfig, alg)
+			}
+		}
+		c.signingAlgs = slices.Clone(algs)
+		return nil
+	})
+}
+
+var signingAlgs = []string{
+	oidc.RS256, oidc.RS384, oidc.RS512,
+	oidc.ES256, oidc.ES384, oidc.ES512,
+	oidc.PS256, oidc.PS384, oidc.PS512,
+	oidc.EdDSA,
 }
 
 // WithCrossOriginLogin lets a login started from another origin redirect to the provider. By default, such a login
