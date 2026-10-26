@@ -68,9 +68,9 @@ func crossHostRedirect(r *http.Request) bool {
 	return origin != r && !strings.EqualFold(origin.URL.Host, r.URL.Host)
 }
 
-// Claims returns the claims of the user of a request authenticated by [Frontend.Middleware], as returned by
+// UserClaims returns the claims about the user of a request authenticated by [Frontend.Middleware], as returned by
 // [Frontend.UserHandler]. It reports false for an anonymous request and for a request not handled by the middleware.
-func Claims(ctx context.Context) (map[string]any, bool) {
+func UserClaims(ctx context.Context) (map[string]any, bool) {
 	st, ok := ctx.Value(sessionKey{}).(*requestState)
 	if !ok || st.session == nil {
 		return nil, false

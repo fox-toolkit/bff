@@ -182,12 +182,12 @@ func TestTransportUpgrade(t *testing.T) {
 	assert.Len(t, sessionCookieLines(resp.Header), 1)
 }
 
-func TestClaims(t *testing.T) {
+func TestUserClaims(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{Claims: map[string]any{"name": "Alice"}})
 	var got map[string]any
 	var ok bool
 	h := func(c *fox.Context) {
-		got, ok = Claims(c.Request().Context())
+		got, ok = UserClaims(c.Request().Context())
 		c.Writer().WriteHeader(http.StatusOK)
 	}
 	_, err := e.router.Add(fox.MethodGet, "/me", h, fox.WithMiddleware(e.fe.Middleware()), AllowAnonymous())
@@ -200,6 +200,6 @@ func TestClaims(t *testing.T) {
 	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/me", nil, nil).Code)
 	assert.False(t, ok)
 
-	_, ok = Claims(t.Context())
+	_, ok = UserClaims(t.Context())
 	assert.False(t, ok)
 }
