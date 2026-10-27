@@ -413,24 +413,19 @@ func TestCallbackDeletesSessionsOfSameSID(t *testing.T) {
 		name    string
 		sid     string
 		records int
-		revoked int
 	}{
-		{name: "same sid", sid: "s1", records: 1, revoked: 1},
-		{name: "no sid", sid: "", records: 2, revoked: 0},
+		{name: "same sid", sid: "s1", records: 1},
+		{name: "no sid", sid: "", records: 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ms := &mapStore{records: make(map[string]store.Record)}
 			e := newTestEnv(t, oidctest.Options{SID: tc.sid}, WithStore(ms))
-			first, _, err := e.fe.readSession(t.Context(), e.loggedIn(t))
-			require.NoError(t, err)
+			e.loggedIn(t)
 			require.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
 
 			assert.Len(t, ms.records, tc.records)
-			assert.Len(t, e.idp.Revoked(), tc.revoked)
-			if tc.revoked > 0 {
-				assert.Equal(t, first.RefreshToken, e.idp.Revoked()[0])
-			}
+			assert.Empty(t, e.idp.Revoked())
 		})
 	}
 }

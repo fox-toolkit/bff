@@ -294,12 +294,13 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 
 		// Replace any previous session of the client. The session cookie is usually not sent on the cross-site redirect
 		// from the provider, so the previous sessions of the same provider session are also found by their sid.
+		// Do not revoke their refresh tokens. Some providers, such as Keycloak, would also revoke the tokens just received.
 		_, prev, err := fe.readSession(r.Context(), cookies)
 		if err == nil && prev.id != "" {
 			_ = fe.cfg.store.Delete(r.Context(), prev.id)
 		}
 		if fe.cfg.store != nil && s.SID != "" {
-			if err := fe.deleteSessionsBy(r.Context(), s.Subject, s.SID); err != nil {
+			if _, err := fe.cfg.store.DeleteBy(r.Context(), fe.partition, s.Subject, s.SID); err != nil {
 				fe.logFailed(r, "session store", err)
 				internalError(w)
 				return

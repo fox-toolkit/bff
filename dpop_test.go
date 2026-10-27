@@ -5,6 +5,7 @@
 package bff
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/fox-toolkit/bff/internal/oidctest"
+	"github.com/fox-toolkit/bff/store"
 	"github.com/fox-toolkit/fox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -236,25 +238,27 @@ func TestSendDPoPProviderError(t *testing.T) {
 
 func TestMiddlewareDPoPMismatch(t *testing.T) {
 	for _, dpop := range []bool{false, true} {
-		t.Run(strconv.FormatBool(dpop), func(t *testing.T) {
-			var opts []Option
-			if dpop {
-				opts = append(opts, WithDPoP(true))
-			}
-			e := newTestEnv(t, oidctest.Options{}, opts...)
-			e.mount(t, "/api")
-			cookies := e.loggedIn(t)
-			s, _, err := e.fe.readSession(t.Context(), cookies)
-			require.NoError(t, err)
+		for _, stateful := range []bool{false, true} {
+			t.Run(fmt.Sprintf("dpop=%t/stateful=%t", dpop, stateful), func(t *testing.T) {
+				ms := &mapStore{records: make(map[string]store.Record)}
+				opts := []Option{WithDPoP(dpop)}
+				if stateful {
+					opts = append(opts, WithStore(ms))
+				}
+				e := newTestEnv(t, oidctest.Options{}, opts...)
+				e.mount(t, "/api")
+				cookies := e.loggedIn(t)
 
-			e.fe.cfg.dpop = !dpop
-			rec := e.do(http.MethodGet, "/api", cookies, nil)
-			assert.Equal(t, http.StatusUnauthorized, rec.Code)
-			lines := sessionCookieLines(rec.Header())
-			require.Len(t, lines, 1)
-			assert.Contains(t, lines[0], "Max-Age=0")
-			assert.Equal(t, []string{s.RefreshToken}, e.idp.Revoked())
-		})
+				e.fe.cfg.dpop = !dpop
+				rec := e.do(http.MethodGet, "/api", cookies, nil)
+				assert.Equal(t, http.StatusUnauthorized, rec.Code)
+				lines := sessionCookieLines(rec.Header())
+				require.Len(t, lines, 1)
+				assert.Contains(t, lines[0], "Max-Age=0")
+				assert.Empty(t, ms.records)
+				assert.Empty(t, e.idp.Revoked())
+			})
+		}
 	}
 }
 

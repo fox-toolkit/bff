@@ -212,9 +212,9 @@ func (rs *requestState) accessToken(ctx context.Context, resource string) (resou
 		// A failed request can still replace the refresh token, so the session is saved before the error is returned.
 		werr := rs.write(tr.ctx)
 		if errors.Is(werr, ErrNoSession) {
-			// The session was ended by another request, such as a back-channel logout, while this one was running.
+			// The session was ended by another request, such as a back-channel logout, while this one was running. Do not
+			// revoke the refresh token. A login in the same provider session may have replaced this session.
 			fe.logger.InfoContext(ctx, "session ended during the request", "path", rs.request.URL.Path)
-			_ = fe.revoke(tr.ctx, s.RefreshToken)
 			rs.end(tr.ctx)
 			return resourceToken{}, nil, ErrNoSession
 		}

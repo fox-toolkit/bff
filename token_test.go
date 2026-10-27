@@ -403,16 +403,12 @@ func TestResourceTransportErrors(t *testing.T) {
 		u := newUpstream(t)
 		e.mountResourceProxy(t, "/billing/*{any}", u, billing)
 		cookies := e.loggedIn(t)
-		s, _, err := e.fe.readSession(t.Context(), cookies)
-		require.NoError(t, err)
 		e.idp.Update(func(o *oidctest.Options) { o.Claims = map[string]any{"iss": "https://other.example.com"} })
 
 		assert.Equal(t, http.StatusUnauthorized, e.do(http.MethodGet, "/billing/invoices", cookies, nil).Code)
 		assert.Empty(t, u.requests)
 		assert.Contains(t, logs.String(), "refreshed id token")
-		revoked := e.idp.Revoked()
-		require.Len(t, revoked, 1)
-		assert.NotEqual(t, s.RefreshToken, revoked[0])
+		assert.Empty(t, e.idp.Revoked())
 	})
 
 	t.Run("session store failure", func(t *testing.T) {
@@ -865,4 +861,18 @@ func TestTransportAfterHandlerConcurrent(t *testing.T) {
 	}
 	clients.Wait()
 	wg.Wait()
+}
+
+func TestResourceTokenSessionEndedDuringRequest(t *testing.T) {
+	ds := &deletingStore{mapStore: &mapStore{records: make(map[string]store.Record)}}
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing), WithStore(ds))
+	errs := make(chan error, 1)
+	e.mountResourceToken(t, "/r", billing, errs)
+	cookies := e.loggedIn(t)
+
+	ds.deleteOnUpdate = true
+	e.do(http.MethodGet, "/r", cookies, nil)
+	require.ErrorIs(t, <-errs, ErrNoSession)
+	assert.Empty(t, ds.records)
+	assert.Empty(t, e.idp.Revoked())
 }

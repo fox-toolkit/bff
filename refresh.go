@@ -5,7 +5,6 @@
 package bff
 
 import (
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -280,8 +279,7 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 			err = sameAuthentication(s, idToken)
 		}
 		if err != nil {
-			// The session ends while its refresh token is still valid.
-			_ = fe.revoke(ctx, cmp.Or(token.RefreshToken, s.RefreshToken))
+			// Do not revoke the refresh token. A login in the same provider session may hold tokens of the same grant.
 			return refreshResult{}, fmt.Errorf("%w: refreshed id token: %w", errSessionEnded, err)
 		}
 	}

@@ -169,8 +169,10 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, se
 		return nil, st, fe.deleteSession(ctx, h, st)
 	}
 	if (s.DPoPKey != nil) != fe.cfg.dpop {
+		// Do not revoke the refresh token. The provider session goes on, and the user can log in again silently.
 		fe.logger.InfoContext(ctx, "session ended by a dpop configuration change", "path", r.URL.Path)
-		return nil, st, fe.endSession(ctx, h, s, st)
+		fe.tokens.Forget(s.LogoutCSRFToken)
+		return nil, st, fe.deleteSession(ctx, h, st)
 	}
 
 	// The idle timeout slides by steps of half its duration, so a session is not rewritten on every request.
@@ -180,7 +182,6 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, se
 		dirty = true
 	}
 
-	refreshed := false
 	writeCtx := ctx
 	var failed error
 	if s.stale(now) {
@@ -194,7 +195,7 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, se
 			return nil, st, fe.deleteSession(ctx, h, st)
 		}
 		if changed {
-			dirty, refreshed, writeCtx = true, true, tr.ctx
+			dirty, writeCtx = true, tr.ctx
 		}
 		// A failed refresh can still replace the refresh token, so the session is saved before the error is returned.
 		if err != nil && expired {
@@ -205,12 +206,10 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, se
 	if dirty {
 		err := fe.writeSession(writeCtx, h, s, st)
 		if errors.Is(err, ErrNoSession) {
-			// The session was ended by another request, such as a back-channel logout, while this one was running.
+			// The session was ended by another request, such as a back-channel logout, while this one was running. Do not
+			// revoke the refresh token. A login in the same provider session may have replaced this session.
 			fe.logger.InfoContext(ctx, "session ended during the request", "path", r.URL.Path)
 			sessionCookie.clear(h, st.chunks)
-			if refreshed {
-				_ = fe.revoke(ctx, s.RefreshToken)
-			}
 			return nil, st, nil
 		}
 		if err != nil {

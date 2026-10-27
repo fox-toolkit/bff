@@ -143,7 +143,7 @@ func TestRefreshedIDToken(t *testing.T) {
 			e.skipAhead(5 * time.Minute)
 
 			assert.Equal(t, tc.code, e.do(http.MethodGet, "/api", cookies, nil).Code)
-			assert.Equal(t, tc.code == http.StatusUnauthorized, len(e.idp.Revoked()) == 1)
+			assert.Empty(t, e.idp.Revoked())
 		})
 	}
 }

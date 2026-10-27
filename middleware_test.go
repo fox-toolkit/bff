@@ -331,10 +331,10 @@ func TestMiddlewareSessionEndedDuringRequest(t *testing.T) {
 		name           string
 		deleteOnLoad   bool
 		deleteOnUpdate bool
-		revoked        int
+		refreshes      int
 	}{
 		{name: "before the refresh", deleteOnLoad: true},
-		{name: "after the refresh", deleteOnUpdate: true, revoked: 1},
+		{name: "after the refresh", deleteOnUpdate: true, refreshes: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,8 +350,8 @@ func TestMiddlewareSessionEndedDuringRequest(t *testing.T) {
 			assert.Len(t, sessionCookieLines(rec.Header()), 1)
 			assert.Empty(t, ds.records)
 			assert.Empty(t, *got)
-			assert.Len(t, e.idp.Revoked(), tc.revoked)
-			assert.Equal(t, tc.revoked, e.idp.Refreshes())
+			assert.Empty(t, e.idp.Revoked())
+			assert.Equal(t, tc.refreshes, e.idp.Refreshes())
 		})
 	}
 }
