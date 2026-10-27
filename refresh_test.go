@@ -125,7 +125,8 @@ func TestRefreshedIDToken(t *testing.T) {
 		refresh map[string]any
 	}{
 		{name: "sub changed", refresh: map[string]any{"sub": "other"}},
-		{name: "azp mismatch", refresh: map[string]any{"aud": []string{"app", "other"}, "azp": "other"}},
+		{name: "azp mismatch", refresh: map[string]any{"azp": "other"}},
+		{name: "several audiences without azp", refresh: map[string]any{"aud": []string{"app", "other"}}},
 		{name: "missing iat", refresh: map[string]any{"iat": nil}},
 	}
 	for _, tc := range cases {

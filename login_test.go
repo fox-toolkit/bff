@@ -325,7 +325,6 @@ func TestCallbackInvalid(t *testing.T) {
 		{name: "audience mismatch", opts: oidctest.Options{Claims: map[string]any{"aud": "other"}}},
 		{name: "expired id token", opts: oidctest.Options{Claims: map[string]any{"exp": time.Now().Add(-time.Hour).Unix()}}},
 		{name: "azp mismatch", opts: oidctest.Options{Claims: map[string]any{"azp": "other"}}},
-		{name: "several audiences and azp mismatch", opts: oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}, "azp": "other"}}},
 		{name: "missing sub", opts: oidctest.Options{Claims: map[string]any{"sub": nil}}},
 		{name: "missing iat", opts: oidctest.Options{Claims: map[string]any{"iat": nil}}},
 	}
@@ -448,14 +447,16 @@ func TestCallbackSeveralAudiences(t *testing.T) {
 	cases := []struct {
 		name   string
 		claims map[string]any
+		code   int
 	}{
-		{name: "with azp", claims: map[string]any{"aud": []string{"app", "other"}, "azp": "app"}},
-		{name: "without azp", claims: map[string]any{"aud": []string{"app", "other"}}},
+		{name: "with azp", claims: map[string]any{"aud": []string{"app", "other"}, "azp": "app"}, code: http.StatusFound},
+		{name: "without azp", claims: map[string]any{"aud": []string{"other", "app"}}, code: http.StatusBadRequest},
+		{name: "azp of another client", claims: map[string]any{"aud": []string{"app", "other"}, "azp": "other"}, code: http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEnv(t, oidctest.Options{Claims: tc.claims})
-			assert.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
+			assert.Equal(t, tc.code, e.login(t, "", nil).Code)
 		})
 	}
 }

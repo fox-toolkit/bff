@@ -72,9 +72,14 @@ func (fe *Frontend) verifyLogoutToken(ctx context.Context, raw string) (string, 
 		Events map[string]json.RawMessage `json:"events"`
 		SID    string                     `json:"sid"`
 		JTI    string                     `json:"jti"`
+		AZP    string                     `json:"azp"`
 		Nonce  json.RawMessage            `json:"nonce"`
 	}
 	if err := token.Claims(&claims); err != nil {
+		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
+	}
+	// Step 4: additional audiences require azp, as for an ID token.
+	if err := fe.checkAudience(token.Audience, claims.AZP); err != nil {
 		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
 	}
 	// Step 5: a sub claim, a sid claim, or both.

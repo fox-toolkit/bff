@@ -385,7 +385,7 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 }
 
 // verifyIDToken verifies the ID token with go-oidc, then the claims that go-oidc does not check. OpenID Connect Core 2
-// requires sub and iat, and OpenID Connect Core 3.1.3.7 step 5 defines the check of azp.
+// requires sub and iat, and OpenID Connect Core 3.1.3.7 steps 3 and 4 define the checks of aud and azp.
 func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, error) {
 	idToken, err := fe.verifier.Verify(ctx, raw)
 	if err != nil {
@@ -403,10 +403,22 @@ func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToke
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, err
 	}
-	if claims.AZP != "" && claims.AZP != fe.oauth2.ClientID {
-		return nil, errors.New("azp mismatch")
+	if err := fe.checkAudience(idToken.Audience, claims.AZP); err != nil {
+		return nil, err
 	}
 	return idToken, nil
+}
+
+// checkAudience checks the audiences and the authorized party of a token. Additional audiences are trusted only when
+// azp is the client ID.
+func (fe *Frontend) checkAudience(aud []string, azp string) error {
+	if len(aud) > 1 && azp == "" {
+		return errors.New("untrusted audience")
+	}
+	if azp != "" && azp != fe.oauth2.ClientID {
+		return errors.New("azp mismatch")
+	}
+	return nil
 }
 
 // validPrompt reports whether prompt is a space-separated list of values supported by the provider, none being

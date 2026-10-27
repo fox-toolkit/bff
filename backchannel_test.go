@@ -119,20 +119,22 @@ func TestBackchannelInvalidToken(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"missing":           "",
-		"malformed":         "not-a-jwt",
-		"other audience":    with(func(c map[string]any) { c["aud"] = "other" }),
-		"other issuer":      with(func(c map[string]any) { c["iss"] = "https://evil.example.com" }),
-		"expired":           with(func(c map[string]any) { c["exp"] = now.Add(-time.Minute).Unix() }),
-		"no sub nor sid":    with(func(c map[string]any) { delete(c, "sub"); delete(c, "sid") }),
-		"no events":         with(func(c map[string]any) { delete(c, "events") }),
-		"other event":       with(func(c map[string]any) { c["events"] = map[string]any{"other": map[string]any{}} }),
-		"event not object":  with(func(c map[string]any) { c["events"] = map[string]any{backchannelLogoutEvent: "x"} }),
-		"nonce":             with(func(c map[string]any) { c["nonce"] = "n" }),
-		"null nonce":        with(func(c map[string]any) { c["nonce"] = nil }),
-		"no jti":            with(func(c map[string]any) { delete(c, "jti") }),
-		"no iat":            with(func(c map[string]any) { delete(c, "iat") }),
-		"unsigned id token": "eyJhbGciOiJub25lIn0." + "e30.",
+		"missing":                       "",
+		"malformed":                     "not-a-jwt",
+		"other audience":                with(func(c map[string]any) { c["aud"] = "other" }),
+		"several audiences without azp": with(func(c map[string]any) { c["aud"] = []string{"app", "other"} }),
+		"azp of another client":         with(func(c map[string]any) { c["azp"] = "other" }),
+		"other issuer":                  with(func(c map[string]any) { c["iss"] = "https://evil.example.com" }),
+		"expired":                       with(func(c map[string]any) { c["exp"] = now.Add(-time.Minute).Unix() }),
+		"no sub nor sid":                with(func(c map[string]any) { delete(c, "sub"); delete(c, "sid") }),
+		"no events":                     with(func(c map[string]any) { delete(c, "events") }),
+		"other event":                   with(func(c map[string]any) { c["events"] = map[string]any{"other": map[string]any{}} }),
+		"event not object":              with(func(c map[string]any) { c["events"] = map[string]any{backchannelLogoutEvent: "x"} }),
+		"nonce":                         with(func(c map[string]any) { c["nonce"] = "n" }),
+		"null nonce":                    with(func(c map[string]any) { c["nonce"] = nil }),
+		"no jti":                        with(func(c map[string]any) { delete(c, "jti") }),
+		"no iat":                        with(func(c map[string]any) { delete(c, "iat") }),
+		"unsigned id token":             "eyJhbGciOiJub25lIn0." + "e30.",
 	}
 	for name, token := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -285,5 +287,24 @@ func TestDeleteSessionsByPanic(t *testing.T) {
 
 	assert.PanicsWithValue(t, "transport bug", func() { _ = e.fe.deleteSessionsBy(t.Context(), "alice", "") })
 	assert.Len(t, e.idp.Revoked(), 4)
+	assert.Empty(t, ms.records)
+}
+
+func TestBackchannelSeveralAudiences(t *testing.T) {
+	e, ms := newBackchannelEnv(t)
+	e.loggedIn(t)
+
+	now := time.Now()
+	token := e.idp.Sign("logout+jwt", map[string]any{
+		"iss":    e.idp.URL,
+		"aud":    []string{"app", "other"},
+		"azp":    "app",
+		"sid":    "s1",
+		"iat":    now.Unix(),
+		"exp":    now.Add(time.Minute).Unix(),
+		"jti":    "id-1",
+		"events": map[string]any{backchannelLogoutEvent: map[string]any{}},
+	})
+	assert.Equal(t, http.StatusOK, e.backchannel(token).Code)
 	assert.Empty(t, ms.records)
 }
