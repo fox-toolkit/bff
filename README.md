@@ -79,10 +79,10 @@ func main() {
 
 	// The frontend must be served from the same origin as the BFF, here directly by the BFF. 
 	// Other setups work too, for example:
-	//  - Reverse proxy in front: an ingress or a load balancer routes /bff/* and /api/* to the BFF, and the other paths
-	//    to a static file server or a CDN.
+	//  - Reverse proxy or CDN in front: it routes /bff/* and /api/* to the BFF, and serves or routes the other paths to
+	//    a static file server.
 	//  - BFF as reverse proxy: the BFF forwards the other paths to the frontend server, for example the Vite dev server.
-	//  - index.html from the BFF: the BFF serves index.html, and the static assets are loaded from a CDN.
+	//  - BFF serving the static files: a single service serves the built frontend and handles /bff/* and /api/*.
 	f.MustAdd(fox.MethodGet, "/*{filepath}", fox.WrapH(http.FileServer(http.Dir("dist"))))
 	
 	log.Fatal(http.ListenAndServeTLS(":8443", "cert.pem", "key.pem", f))
