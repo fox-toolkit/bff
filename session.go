@@ -14,13 +14,18 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/fox-toolkit/bff/store"
 	"golang.org/x/oauth2"
 )
 
-const sessionVersion = 1
+const (
+	sessionVersion = 1
+	// maxConcurrentRevocations bounds the revocations sent at once when several sessions end together.
+	maxConcurrentRevocations = 4
+)
 
 var ErrNoSession = errors.New("no session")
 
@@ -318,16 +323,58 @@ func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) e
 	if err != nil {
 		return err
 	}
+
+	// The sessions are deleted, so the request does not cancel the revocations, which share one budget.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
+	defer cancel()
+	sem := make(chan struct{}, maxConcurrentRevocations)
+	var (
+		wg        sync.WaitGroup
+		panicOnce sync.Once
+		panicked  any
+	)
+	skipped := 0
 	for id, r := range records {
 		data, err := fe.aead.Decrypt(r.Data, storeAssociatedData(id))
 		if err != nil {
 			continue
 		}
-		if s, err := decodeSession(data); err == nil && s.RefreshToken != "" {
-			// Back-Channel Logout 2.7 keeps the refresh tokens issued with offline_access, but here a refresh token
-			// only lives in the session, so nothing can use it once the session is deleted.
-			_ = fe.revoke(ctx, s.RefreshToken)
+		// Back-Channel Logout 2.7 keeps the refresh tokens issued with offline_access, but here a refresh token only
+		// lives in the session, so nothing can use it once the session is deleted.
+		s, err := decodeSession(data)
+		if err != nil || s.RefreshToken == "" {
+			continue
 		}
+		// select picks at random when both cases are ready.
+		if ctx.Err() != nil {
+			skipped++
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			skipped++
+			continue
+		}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			defer func() {
+				if p := recover(); p != nil {
+					panicOnce.Do(func() { panicked = p })
+				}
+			}()
+			tctx, cancel := context.WithTimeout(ctx, revocationTimeout)
+			defer cancel()
+			_ = fe.revokeWithin(tctx, s.RefreshToken)
+		})
+	}
+	wg.Wait()
+	if skipped > 0 {
+		fe.logger.WarnContext(ctx, "refresh tokens not revoked", "count", skipped)
+	}
+	// The panic of a revocation is raised on the goroutine of the caller, where the server recovers it.
+	if panicked != nil {
+		panic(panicked)
 	}
 	return nil
 }

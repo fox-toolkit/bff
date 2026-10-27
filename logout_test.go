@@ -347,7 +347,7 @@ func TestRevocationRetry(t *testing.T) {
 			e.fe.provider.client = &client
 
 			start := time.Now()
-			err := e.fe.postRevocation(t.Context(), "rt")
+			err := e.fe.revoke(t.Context(), "rt")
 			assert.Less(t, time.Since(start), time.Second)
 			assert.Equal(t, tc.revoked, err == nil)
 			assert.Equal(t, tc.attempts, attempts.Load())

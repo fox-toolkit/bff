@@ -6,6 +6,8 @@ package bff
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/fox-toolkit/bff/internal/oidctest"
@@ -199,4 +202,88 @@ func TestBackchannelLog(t *testing.T) {
 	assert.Contains(t, buf.String(), "level=WARN")
 	assert.Contains(t, buf.String(), `msg="invalid back-channel logout"`)
 	assert.Contains(t, buf.String(), "client_id=app")
+}
+
+func TestDeleteSessionsByBudget(t *testing.T) {
+	cases := []struct {
+		name     string
+		sessions int
+		hang     time.Duration
+		elapsed  time.Duration
+		attempts int32
+		skipped  int
+	}{
+		{name: "token timeout", sessions: 5, elapsed: 2 * revocationTimeout, attempts: 5},
+		{name: "budget", sessions: 40, hang: 7 * time.Second, elapsed: endSessionTimeout, attempts: 36, skipped: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			ms := &mapStore{records: make(map[string]store.Record)}
+			e := newTestEnv(t, oidctest.Options{}, WithStore(ms), WithLogHandler(slog.NewTextHandler(&buf, nil)))
+			for i := range tc.sessions {
+				e.loginAs(t, "alice", fmt.Sprintf("s%d", i))
+			}
+
+			var inflight, peak, attempts atomic.Int32
+			client := *e.fe.provider.client
+			client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				n := inflight.Add(1)
+				defer inflight.Add(-1)
+				for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+				}
+				var done <-chan time.Time
+				if tc.hang > 0 {
+					done = time.After(tc.hang)
+				}
+				select {
+				case <-done:
+					return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: r}, nil
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
+			})
+			e.fe.provider.client = &client
+
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				start := time.Now()
+				require.NoError(t, e.fe.deleteSessionsBy(ctx, "alice", ""))
+				assert.Equal(t, tc.elapsed, time.Since(start))
+			})
+			assert.Equal(t, int32(maxConcurrentRevocations), peak.Load())
+			assert.Equal(t, tc.attempts, attempts.Load())
+			if tc.skipped == 0 {
+				assert.NotContains(t, buf.String(), "refresh tokens not revoked")
+			} else {
+				assert.Contains(t, buf.String(), fmt.Sprintf(`msg="refresh tokens not revoked" client_id=app count=%d`, tc.skipped))
+			}
+			assert.Empty(t, ms.records)
+		})
+	}
+}
+
+func TestDeleteSessionsByPanic(t *testing.T) {
+	ms := &mapStore{records: make(map[string]store.Record)}
+	e := newTestEnv(t, oidctest.Options{}, WithStore(ms))
+	for i := range 5 {
+		e.loginAs(t, "alice", fmt.Sprintf("s%d", i))
+	}
+
+	var calls atomic.Int32
+	client := *e.fe.provider.client
+	base := client.Transport
+	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/revoke" && calls.Add(1) == 1 {
+			panic("transport bug")
+		}
+		return base.RoundTrip(r)
+	})
+	e.fe.provider.client = &client
+
+	assert.PanicsWithValue(t, "transport bug", func() { _ = e.fe.deleteSessionsBy(t.Context(), "alice", "") })
+	assert.Len(t, e.idp.Revoked(), 4)
+	assert.Empty(t, ms.records)
 }

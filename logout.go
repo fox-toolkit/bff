@@ -99,8 +99,15 @@ func (fe *Frontend) postLogoutURL() string {
 }
 
 // revoke revokes the refresh token, as defined by RFC 7009. It does nothing when the provider has no revocation
-// endpoint.
+// endpoint. The request that started it does not cancel it.
 func (fe *Frontend) revoke(ctx context.Context, refreshToken string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationTimeout)
+	defer cancel()
+	return fe.revokeWithin(ctx, refreshToken)
+}
+
+// revokeWithin is like revoke, but stops when ctx is done.
+func (fe *Frontend) revokeWithin(ctx context.Context, refreshToken string) error {
 	err := fe.postRevocation(ctx, refreshToken)
 	if err != nil {
 		fe.logger.WarnContext(ctx, "refresh token revocation failed", "error", err)
@@ -112,8 +119,6 @@ func (fe *Frontend) postRevocation(ctx context.Context, refreshToken string) err
 	if fe.provider.revocationEndpoint == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationTimeout)
-	defer cancel()
 
 	for attempt := 1; ; attempt++ {
 		resp, err := fe.sendRevocation(ctx, refreshToken)
