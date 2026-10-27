@@ -43,9 +43,7 @@ type session struct {
 	LogoutCSRFToken string          `json:"lt"`
 	UserInfo        json.RawMessage `json:"ui,omitempty"`
 	DPoPKey         []byte          `json:"dk,omitempty"`
-	// Authentication holds the claims of the login ID token that a refreshed ID token must keep.
-	Authentication authentication `json:"auth"`
-	Version        int            `json:"v"`
+	Version         int             `json:"v"`
 	// Expiry is the expiration time of the access token, and Lifetime its lifetime in seconds when it was issued.
 	Expiry   int64 `json:"exp,omitzero"`
 	Lifetime int64 `json:"ttl,omitzero"`

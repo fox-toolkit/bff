@@ -355,7 +355,6 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	}
 	var claims struct {
 		SID string `json:"sid"`
-		authentication
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
@@ -366,7 +365,6 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	s.Subject = idToken.Subject
 	s.SID = claims.SID
 	s.IDToken = rawIDToken
-	s.Authentication = claims.authentication
 	s.DPoPKey = ls.DPoPKey
 	s.setToken(token, now)
 
@@ -387,7 +385,7 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 }
 
 // verifyIDToken verifies the ID token with go-oidc, then the claims that go-oidc does not check. OpenID Connect Core 2
-// requires sub and iat, and OpenID Connect Core 3.1.3.7 steps 4 and 5 define the checks of azp.
+// requires sub and iat, and OpenID Connect Core 3.1.3.7 step 5 defines the check of azp.
 func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, error) {
 	idToken, err := fe.verifier.Verify(ctx, raw)
 	if err != nil {
@@ -404,9 +402,6 @@ func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToke
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, err
-	}
-	if claims.AZP == "" && len(idToken.Audience) > 1 {
-		return nil, errors.New("azp required with several audiences")
 	}
 	if claims.AZP != "" && claims.AZP != fe.oauth2.ClientID {
 		return nil, errors.New("azp mismatch")

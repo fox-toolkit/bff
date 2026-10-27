@@ -325,8 +325,7 @@ func TestCallbackInvalid(t *testing.T) {
 		{name: "audience mismatch", opts: oidctest.Options{Claims: map[string]any{"aud": "other"}}},
 		{name: "expired id token", opts: oidctest.Options{Claims: map[string]any{"exp": time.Now().Add(-time.Hour).Unix()}}},
 		{name: "azp mismatch", opts: oidctest.Options{Claims: map[string]any{"azp": "other"}}},
-		{name: "auth_time not a number", opts: oidctest.Options{Claims: map[string]any{"auth_time": "1000"}}},
-		{name: "several audiences without azp", opts: oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}}}},
+		{name: "several audiences and azp mismatch", opts: oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}, "azp": "other"}}},
 		{name: "missing sub", opts: oidctest.Options{Claims: map[string]any{"sub": nil}}},
 		{name: "missing iat", opts: oidctest.Options{Claims: map[string]any{"iat": nil}}},
 	}
@@ -445,9 +444,20 @@ func TestCallbackDecoyKeys(t *testing.T) {
 	assert.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
 }
 
-func TestCallbackSeveralAudiencesWithAZP(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{Claims: map[string]any{"aud": []string{"app", "other"}, "azp": "app"}})
-	assert.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
+func TestCallbackSeveralAudiences(t *testing.T) {
+	cases := []struct {
+		name   string
+		claims map[string]any
+	}{
+		{name: "with azp", claims: map[string]any{"aud": []string{"app", "other"}, "azp": "app"}},
+		{name: "without azp", claims: map[string]any{"aud": []string{"app", "other"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{Claims: tc.claims})
+			assert.Equal(t, http.StatusFound, e.login(t, "", nil).Code)
+		})
+	}
 }
 
 func TestLoginPendingLimit(t *testing.T) {

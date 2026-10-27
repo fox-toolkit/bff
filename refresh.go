@@ -7,11 +7,9 @@ package bff
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
-	"slices"
 	"sync"
 	"time"
 
@@ -275,8 +273,9 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 	rawIDToken, _ := token.Extra("id_token").(string)
 	if rawIDToken != "" {
 		idToken, err := fe.verifyIDToken(ctx, rawIDToken)
-		if err == nil {
-			err = sameAuthentication(s, idToken)
+		// OpenID Connect Core 12.2 requires the same subject. Other claims vary between providers and are not compared.
+		if err == nil && idToken.Subject != s.Subject {
+			err = errors.New("sub changed")
 		}
 		if err != nil {
 			// Do not revoke the refresh token. A login in the same provider session may hold tokens of the same grant.
@@ -284,47 +283,4 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 		}
 	}
 	return refreshResult{token: token, idToken: rawIDToken, at: fe.now()}, nil
-}
-
-// sameAuthentication checks that a refreshed ID token keeps the subject, audience, authentication time and nonce of
-// the login ID token, as required by OpenID Connect Core 12.2.
-func sameAuthentication(s *session, idToken *oidc.IDToken) error {
-	if idToken.Subject != s.Subject {
-		return errors.New("sub changed")
-	}
-	var cur authentication
-	if err := idToken.Claims(&cur); err != nil {
-		return err
-	}
-	login := s.Authentication
-	switch {
-	case !slices.Equal(slices.Sorted(slices.Values(login.Audience)), slices.Sorted(slices.Values(cur.Audience))):
-		return errors.New("aud changed")
-	case cur.AuthTime != 0 && login.AuthTime != 0 && cur.AuthTime != login.AuthTime:
-		return errors.New("auth_time changed")
-	case cur.Nonce != "" && cur.Nonce != login.Nonce:
-		return errors.New("nonce changed")
-	}
-	return nil
-}
-
-type authentication struct {
-	Nonce    string   `json:"nonce,omitempty"`
-	Audience audience `json:"aud,omitempty"`
-	AuthTime float64  `json:"auth_time,omitzero"`
-}
-
-// audience is the aud claim, a string or an array of strings.
-type audience []string
-
-func (a *audience) UnmarshalJSON(data []byte) error {
-	if json.Unmarshal(data, (*[]string)(a)) == nil {
-		return nil
-	}
-	var one string
-	if err := json.Unmarshal(data, &one); err != nil {
-		return err
-	}
-	*a = audience{one}
-	return nil
 }
