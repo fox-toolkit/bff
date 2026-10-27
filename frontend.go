@@ -17,7 +17,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Frontend is a browser application served by the BFF, with its own OpenID Connect client and user sessions.
+// Frontend is the BFF of a browser-based application, with its own OpenID Connect client and user sessions.
 type Frontend struct {
 	oauth2                oauth2.Config
 	auth                  clientAuth
@@ -135,6 +135,11 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 		cop:                   http.NewCrossOriginProtection(),
 		logger:                slog.New(cfg.logHandler).With("client_id", client.ClientID),
 		partition:             partition,
+	}
+	for _, origin := range cfg.trustedOrigins {
+		if err := fe.cop.AddTrustedOrigin(origin); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+		}
 	}
 	fe.tokens = newTokenGroup(func() time.Time { return fe.now() })
 	return fe, nil

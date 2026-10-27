@@ -26,7 +26,10 @@ import (
 const (
 	loginTimeout = 15 * time.Minute
 	// maxPendingLogins bounds the login cookies of a browser, which abandoned or forced logins would pile up.
-	maxPendingLogins   = 3
+	maxPendingLogins = 3
+	// maxReturnURL bounds the return URL in the login cookie. A page of another site can choose it, and escaped JSON
+	// characters such as & take 6 bytes.
+	maxReturnURL       = 1024
 	maxPARResponseSize = 1 << 16
 )
 
@@ -43,12 +46,10 @@ type loginState struct {
 }
 
 // LoginHandler returns a handler that starts the authorization code flow with the provider. The browser must initiate
-// the login flow by navigating to it. After login, the browser is redirected to the local URL in the returnUrl query
-// parameter, or to "/" if it is absent. The optional prompt query parameter is passed to the provider, such as
+// the login flow by navigating to it. After login, the browser is redirected to the URL in the returnUrl query
+// parameter, or to "/" if it is absent. It must be a local URL or a URL of a trusted origin (see [WithTrustedOrigins]),
+// of at most 1024 bytes once encoded as JSON. The optional prompt query parameter is passed to the provider, such as
 // prompt=none for a silent login.
-//
-// A login started from another origin redirects to the return URL without starting the flow, unless
-// [WithCrossOriginLogin] is enabled.
 //
 // When Pushed Authorization Requests (PAR, RFC 9126) are used, each login sends a request to the pushed authorization
 // request endpoint of the provider, so the route should be rate limited. If this request fails, the handler responds
@@ -63,7 +64,8 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		returnURL := q.Get("returnUrl")
 		if returnURL == "" {
 			returnURL = "/"
-		} else if !localURL(returnURL) {
+		} else if encoded, _ := json.Marshal(returnURL); len(encoded)-2 > maxReturnURL ||
+			!localURL(returnURL) && !fe.trustedURL(returnURL) {
 			fe.logRejected(r, "invalid return url", nil)
 			badRequest(w)
 			return
@@ -74,12 +76,6 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 			badRequest(w)
 			return
 		}
-		if !fe.cfg.crossOriginLogin && crossOrigin(r) {
-			fe.logger.InfoContext(r.Context(), "login from another origin", "path", r.URL.Path)
-			http.Redirect(w, r, returnURL, http.StatusFound) //nolint:gosec // checked by localURL
-			return
-		}
-
 		state := randomString()
 		ls := loginState{
 			Verifier:  oauth2.GenerateVerifier(),
@@ -189,13 +185,6 @@ func (fe *Frontend) pushAuthorizationRequest(ctx context.Context, params url.Val
 		return "", errors.New("no request uri")
 	}
 	return res.RequestURI, nil
-}
-
-// crossOrigin reports whether the browser sent the request from another origin, as http.CrossOriginProtection does. A
-// request without Sec-Fetch-Site is accepted.
-func crossOrigin(r *http.Request) bool {
-	site := r.Header.Get("Sec-Fetch-Site")
-	return site != "" && site != "same-origin" && site != "none"
 }
 
 // trimPendingLogins deletes the login cookies of the oldest pending logins, keeping room for a new one.
@@ -452,6 +441,12 @@ func localURL(u string) bool {
 	}
 	parsed, err := url.Parse(u)
 	return err == nil && parsed.Scheme == "" && parsed.Host == ""
+}
+
+// trustedURL reports whether u is an absolute URL of a trusted origin.
+func (fe *Frontend) trustedURL(u string) bool {
+	parsed, err := url.Parse(u)
+	return err == nil && parsed.User == nil && slices.Contains(fe.cfg.trustedOrigins, parsed.Scheme+"://"+parsed.Host)
 }
 
 func badRequest(w http.ResponseWriter) {

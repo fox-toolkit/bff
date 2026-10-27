@@ -34,7 +34,7 @@ type cookieSpec struct {
 	sameSite http.SameSite
 }
 
-// sessionCookie is only sent on same-site requests. The SPA calls the BFF from its own origin.
+// sessionCookie is only sent on same-site requests.
 var sessionCookie = cookieSpec{name: cookiePrefix + "bff", purpose: "session", sameSite: http.SameSiteStrictMode}
 
 // loginCookie contains the state of one login flow. It must be sent on the cross-site navigation from the provider to

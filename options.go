@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -41,20 +42,20 @@ func (f optionFunc) apply(c *config) error {
 }
 
 type config struct {
-	logHandler       slog.Handler
-	store            store.Store
-	unauthorized     fox.HandlerFunc
-	csrfHeader       string
-	csrfValue        string
-	signingAlgs      []string
-	resources        []string
-	idleTimeout      time.Duration
-	absoluteTimeout  time.Duration
-	userInfo         bool
-	dpop             bool
-	crossOriginLogin bool
-	requestObject    bool
-	par              PushedAuthorization
+	logHandler      slog.Handler
+	store           store.Store
+	unauthorized    fox.HandlerFunc
+	csrfHeader      string
+	csrfValue       string
+	signingAlgs     []string
+	resources       []string
+	trustedOrigins  []string
+	idleTimeout     time.Duration
+	absoluteTimeout time.Duration
+	userInfo        bool
+	dpop            bool
+	requestObject   bool
+	par             PushedAuthorization
 }
 
 func defaultConfig() *config {
@@ -177,13 +178,36 @@ var signingAlgs = []string{
 	oidc.EdDSA,
 }
 
-// WithCrossOriginLogin lets a login started from another origin redirect to the provider. By default, such a login
-// redirects to its return URL without starting the flow.
-func WithCrossOriginLogin(enable bool) Option {
+// WithTrustedOrigins accepts the requests from the given origins, for a browser-based application that is
+// cross-origin with the BFF, and lets a login return to a URL of these origins. An origin has the form
+// "scheme://host[:port]" sent in the Origin header, in lowercase and without the default port, with https or, on a
+// loopback host, http. The application and the BFF must be same site, such as https://app.example.com and
+// https://bff.example.com, as the session cookie is SameSite=Strict. A CORS middleware must allow only these origins,
+// with credentials. The BFF should also require the header of [WithCSRFHeader], as recommended by RFC 10017.
+func WithTrustedOrigins(origins ...string) Option {
 	return optionFunc(func(c *config) error {
-		c.crossOriginLogin = enable
+		for _, origin := range origins {
+			if !validOrigin(origin) {
+				return fmt.Errorf("%w: invalid trusted origin %q", ErrInvalidConfig, origin)
+			}
+		}
+		c.trustedOrigins = appendUnique(c.trustedOrigins, origins...)
 		return nil
 	})
+}
+
+// validOrigin reports whether origin is serialized as a browser sends it, as defined by RFC 6454, with https or
+// loopback http.
+func validOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || checkURL(origin) != nil || u.Scheme+"://"+u.Host != origin {
+		return false
+	}
+	host, port := u.Hostname(), u.Port()
+	if strings.HasSuffix(u.Host, ":") || u.Scheme == "https" && port == "443" || u.Scheme == "http" && port == "80" {
+		return false
+	}
+	return net.ParseIP(host) != nil || strings.Trim(host, "abcdefghijklmnopqrstuvwxyz0123456789.-") == ""
 }
 
 // PushedAuthorization defines when a [Frontend] pushes its authorization requests to the provider, as defined by

@@ -62,9 +62,10 @@ func (c *pendingCookies) started() bool {
 }
 
 // Authenticate returns a middleware that authenticates the requests with the session cookie. It rejects cross-origin
-// requests, refreshes the access token before it expires, and makes it available with [AccessToken]. Requests without a
-// valid session are handled by the unauthorized handler, unless the route has [AllowAnonymous]. The session cookies are
-// removed from the request passed to the next handler and from its response.
+// requests with an unsafe method, except from the trusted origins (see [WithTrustedOrigins]), refreshes the access
+// token before it expires, and makes it available with [AccessToken]. Requests without a valid session are handled by
+// the unauthorized handler, unless the route has [AllowAnonymous]. The session cookies are removed from the request
+// passed to the next handler and from its response.
 func (fe *Frontend) Authenticate() fox.MiddlewareFunc {
 	return func(next fox.HandlerFunc) fox.HandlerFunc {
 		return func(c *fox.Context) {

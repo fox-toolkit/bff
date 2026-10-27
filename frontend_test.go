@@ -11,6 +11,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"maps"
+	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -156,6 +158,17 @@ func TestNewFrontend(t *testing.T) {
 		{name: "csrf header value", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x-csrf", "")}},
 		{name: "nil unauthorized handler", client: func(*Client) {}, opts: []Option{WithUnauthorizedHandler(nil)}},
 		{name: "nil log handler", client: func(*Client) {}, opts: []Option{WithLogHandler(nil)}},
+		{name: "trusted origin with path", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com/")}},
+		{name: "trusted origin without scheme", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("spa.example.com")}},
+		{name: "http trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("http://spa.example.com")}},
+		{name: "uppercase trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://SPA.example.com")}},
+		{name: "trusted origin with userinfo", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://user@spa.example.com")}},
+		{name: "trusted origin with default port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com:443")}},
+		{name: "trusted origin with empty port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com:")}},
+		{name: "loopback trusted origin with default port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("http://localhost:80")}},
+		{name: "unicode trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://bücher.example")}},
+		{name: "wildcard trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://*.example.com")}},
+		{name: "trusted origin with quote", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com'")}},
 		{name: "dpop algorithm", client: func(c *Client) {
 			c.Provider = newTestProvider(t, map[string]any{"dpop_signing_alg_values_supported": []string{"RS256"}})
 		}, opts: []Option{WithDPoP(true)}},
@@ -266,4 +279,73 @@ func TestWithResources(t *testing.T) {
 	for _, resource := range []string{"/api", "https://api.example.com/#x", "https://api.example.com/#", "https://[::1", ""} {
 		assert.ErrorIs(t, WithResources(resource).apply(defaultConfig()), ErrInvalidConfig, resource)
 	}
+}
+
+func TestTrustedOrigins(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{},
+		WithTrustedOrigins("https://spa.example.com", "https://admin.example.com", "http://localhost:5173"),
+		WithTrustedOrigins("https://spa.example.com", "http://[::1]:5173"),
+	)
+	e.mount(t, "/api")
+	e.mountLogout(t)
+	assert.Equal(t, []string{"https://spa.example.com", "https://admin.example.com", "http://localhost:5173", "http://[::1]:5173"}, e.fe.cfg.trustedOrigins)
+
+	t.Run("requests", func(t *testing.T) {
+		cookies := e.loggedIn(t)
+		cases := []struct {
+			name   string
+			site   string
+			origin string
+			code   int
+		}{
+			{name: "trusted", site: "same-site", origin: "https://spa.example.com", code: http.StatusOK},
+			{name: "loopback", site: "cross-site", origin: "http://localhost:5173", code: http.StatusOK},
+			{name: "other subdomain", site: "same-site", origin: "https://evil.example.com", code: http.StatusForbidden},
+			{name: "other scheme", site: "cross-site", origin: "http://spa.example.com", code: http.StatusForbidden},
+			{name: "old browser", origin: "https://spa.example.com", code: http.StatusOK},
+			{name: "old browser from other subdomain", origin: "https://evil.example.com", code: http.StatusForbidden},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				header := http.Header{"Origin": {tc.origin}}
+				if tc.site != "" {
+					header.Set("Sec-Fetch-Site", tc.site)
+				}
+				assert.Equal(t, tc.code, e.do(http.MethodPost, "/api", cookies, header).Code)
+			})
+		}
+	})
+
+	t.Run("logout", func(t *testing.T) {
+		cookies := e.loggedIn(t)
+		s, _, err := e.fe.readSession(t.Context(), cookies)
+		require.NoError(t, err)
+		header := http.Header{"Sec-Fetch-Site": {"same-site"}, "Origin": {"https://spa.example.com"}}
+		rec := e.doForm(http.MethodPost, "/bff/logout", cookies, header, url.Values{"csrf_token": {s.LogoutCSRFToken}})
+		assert.Equal(t, http.StatusSeeOther, rec.Code)
+	})
+
+	t.Run("return url", func(t *testing.T) {
+		rec := e.login(t, "returnUrl="+url.QueryEscape("https://spa.example.com/orders?id=1"), nil)
+		assert.Equal(t, http.StatusFound, rec.Code)
+		assert.Equal(t, "https://spa.example.com/orders?id=1", rec.Header().Get("Location"))
+
+		for _, u := range []string{
+			"https://evil.example.com/",
+			"https://spa.example.com.evil.com/",
+			"https://user@spa.example.com/",
+			"http://spa.example.com/",
+			"https://spa.example.com\\@evil.com",
+			"//spa.example.com/",
+			"https://spa.example.com/a\tb",
+			"https://SPA.example.com/",
+			"https://spa.example.com:443/",
+			"https://adm%C4%B0n.example.com/",
+			"https://admİn.example.com/",
+		} {
+			t.Run(u, func(t *testing.T) {
+				assert.Equal(t, http.StatusBadRequest, e.serve("/bff/login?returnUrl="+url.QueryEscape(u), nil).Code)
+			})
+		}
+	})
 }

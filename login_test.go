@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -170,41 +169,6 @@ func TestLoginPushedAuthorizationFailure(t *testing.T) {
 	}
 }
 
-func TestLoginCrossOrigin(t *testing.T) {
-	cases := []struct {
-		site    string
-		allow   bool
-		started bool
-	}{
-		{site: "", started: true},
-		{site: "same-origin", started: true},
-		{site: "none", started: true},
-		{site: "same-site"},
-		{site: "cross-site"},
-		{site: "cross-site", allow: true, started: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.site+" "+strconv.FormatBool(tc.allow), func(t *testing.T) {
-			e := newTestEnv(t, oidctest.Options{}, WithCrossOriginLogin(tc.allow))
-			req := httptest.NewRequest(http.MethodGet, appOrigin+"/bff/login?returnUrl=/orders", nil)
-			if tc.site != "" {
-				req.Header.Set("Sec-Fetch-Site", tc.site)
-			}
-			rec := httptest.NewRecorder()
-			e.router.ServeHTTP(rec, req)
-
-			require.Equal(t, http.StatusFound, rec.Code)
-			if tc.started {
-				assert.True(t, strings.HasPrefix(rec.Header().Get("Location"), e.idp.URL))
-				assert.Len(t, rec.Header().Values("Set-Cookie"), 1)
-			} else {
-				assert.Equal(t, "/orders", rec.Header().Get("Location"))
-				assert.Empty(t, rec.Header().Values("Set-Cookie"))
-			}
-		})
-	}
-}
-
 func TestCallback(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
 		var opts []Option
@@ -288,6 +252,28 @@ func TestLoginInvalid(t *testing.T) {
 			assert.Empty(t, rec.Header().Values("Set-Cookie"))
 		})
 	}
+}
+
+func TestLoginReturnURLLength(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{})
+	longest := "/" + strings.Repeat("a", maxReturnURL-1)
+	rec := e.login(t, "returnUrl="+longest, nil)
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, longest, rec.Header().Get("Location"))
+
+	for _, u := range []string{
+		longest + "a",
+		"/?" + strings.Repeat("&", (maxReturnURL-2)/6+1),
+		"/" + strings.Repeat("<", (maxReturnURL-2)/6+1),
+	} {
+		rec = e.serve("/bff/login?returnUrl="+url.QueryEscape(u), nil)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Empty(t, rec.Header().Values("Set-Cookie"))
+	}
+
+	rec = e.serve("/bff/login?returnUrl="+url.QueryEscape("/?"+strings.Repeat("&", (maxReturnURL-2)/6)), nil)
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Len(t, rec.Header().Values("Set-Cookie"), 1)
 }
 
 func TestCallbackInvalid(t *testing.T) {

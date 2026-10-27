@@ -77,12 +77,9 @@ func main() {
 	// Proxy to the resource server, with the user's access token.
 	f.MustAdd(fox.MethodAny, "/api/*{path}", fox.WrapH(proxy), fox.WithMiddleware(fe.Authenticate()))
 
-	// The frontend must be served from the same origin as the BFF, here directly by the BFF. 
-	// Other setups work too, for example:
-	//  - Reverse proxy or CDN in front: it routes /bff/* and /api/* to the BFF, and serves or routes the other paths to
-	//    a static file server.
-	//  - BFF as reverse proxy: the BFF forwards the other paths to the frontend server, for example the Vite dev server.
-	//  - BFF serving the static files: a single service serves the built frontend and handles /bff/* and /api/*.
+	// The browser-based application is served here by the BFF. For other deployments, see
+	// https://datatracker.ietf.org/doc/html/draft-ietf-oauth-browser-based-apps#section-6.1.2.5. A cross-origin
+	// application requires bff.WithTrustedOrigins and a CORS middleware that allows its origin with credentials.
 	f.MustAdd(fox.MethodGet, "/*{filepath}", fox.WrapH(http.FileServer(http.Dir("dist"))))
 	
 	log.Fatal(http.ListenAndServeTLS(":8443", "cert.pem", "key.pem", f))
