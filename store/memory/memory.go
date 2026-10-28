@@ -1,6 +1,6 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.txt.
+// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
 
 // Package memory provides a [store.Store] that keeps the sessions in memory.
 package memory
