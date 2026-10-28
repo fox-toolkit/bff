@@ -317,14 +317,12 @@ func (fe *Frontend) endSession(ctx context.Context, h http.Header, s *session, s
 // deleteSessionsBy deletes the stored sessions of the subject, restricted to the sid when it is not empty, and revokes
 // their refresh tokens.
 func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) error {
-	records, err := fe.cfg.store.DeleteBy(ctx, fe.partition, subject, sid)
-	if err != nil {
-		return err
-	}
-
-	// The sessions are deleted, so the request does not cancel the revocations, which share one budget.
+	// The request cancels neither the deletion nor the revocations, which share one budget. The sessions deleted
+	// before an error are revoked too.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
 	defer cancel()
+	records, deleteErr := fe.cfg.store.DeleteBy(ctx, fe.partition, subject, sid)
+
 	sem := make(chan struct{}, maxConcurrentRevocations)
 	var (
 		wg        sync.WaitGroup
@@ -374,7 +372,7 @@ func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) e
 	if panicked != nil {
 		panic(panicked)
 	}
-	return nil
+	return deleteErr
 }
 
 // storeID returns the store id of a session key. Only the hash is stored, so the store content cannot be used as a

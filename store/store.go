@@ -45,7 +45,6 @@ type Store interface {
 	// Delete deletes the session. Deleting a session that does not exist is not an error.
 	Delete(ctx context.Context, id string) error
 	// DeleteBy deletes the sessions of the partition that belong to the subject, restricted to the sid when it is not
-	// empty, and returns them by id. An empty subject matches any subject. DeleteBy deletes nothing when both are
-	// empty.
+	// empty, and returns them by id. An empty subject matches any subject. It may return an error with a non-empty map.
 	DeleteBy(ctx context.Context, partition, subject, sid string) (map[string]Record, error)
 }

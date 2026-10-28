@@ -7,6 +7,7 @@ package bff
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -288,6 +289,38 @@ func TestDeleteSessionsByPanic(t *testing.T) {
 	assert.PanicsWithValue(t, "transport bug", func() { _ = e.fe.deleteSessionsBy(t.Context(), "alice", "") })
 	assert.Len(t, e.idp.Revoked(), 4)
 	assert.Empty(t, ms.records)
+}
+
+// partialStore deletes the sessions but fails DeleteBy once fail is set, and records whether the context was canceled.
+type partialStore struct {
+	*mapStore
+	ctxErr error
+	fail   bool
+}
+
+var errPartial = errors.New("partial delete")
+
+func (s *partialStore) DeleteBy(ctx context.Context, partition, subject, sid string) (map[string]store.Record, error) {
+	deleted, _ := s.mapStore.DeleteBy(ctx, partition, subject, sid)
+	if !s.fail {
+		return deleted, nil
+	}
+	s.ctxErr = ctx.Err()
+	return deleted, errPartial
+}
+
+func TestDeleteSessionsByStoreError(t *testing.T) {
+	ps := &partialStore{mapStore: &mapStore{records: make(map[string]store.Record)}}
+	e := newTestEnv(t, oidctest.Options{}, WithStore(ps))
+	e.loginAs(t, "alice", "s1")
+	e.loginAs(t, "alice", "s2")
+	ps.fail = true
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.ErrorIs(t, e.fe.deleteSessionsBy(ctx, "alice", ""), errPartial)
+	assert.NoError(t, ps.ctxErr)
+	assert.Len(t, e.idp.Revoked(), 2)
 }
 
 func TestBackchannelSeveralAudiences(t *testing.T) {
