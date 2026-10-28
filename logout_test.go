@@ -151,6 +151,28 @@ func TestLogoutWithoutProviderEndpoints(t *testing.T) {
 	assert.Empty(t, e.idp.Revoked())
 }
 
+func TestLogoutWithProviderEndpointOptions(t *testing.T) {
+	opts := oidctest.Options{Metadata: map[string]any{"end_session_endpoint": nil, "revocation_endpoint": nil}}
+	e := newTestEnvWithClient(t, opts, func(c *Client) {
+		issuer := c.Provider.issuer
+		p, err := NewProvider(t.Context(), issuer, WithHTTPClient(c.Provider.client),
+			WithEndSessionEndpoint(issuer+"/end_session"), WithRevocationEndpoint(issuer+"/revoke"))
+		require.NoError(t, err)
+		c.Provider = p
+	})
+	e.mountLogout(t)
+	cookies := e.loggedIn(t)
+	s, _, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+
+	rec := e.doForm(http.MethodPost, "/bff/logout", cookies, nil, url.Values{"csrf_token": {s.LogoutCSRFToken}})
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, []string{s.RefreshToken}, e.idp.Revoked())
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, e.idp.URL+"/end_session", loc.Scheme+"://"+loc.Host+loc.Path)
+}
+
 type failingStore struct {
 	store.Store
 	fail bool

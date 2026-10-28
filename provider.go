@@ -5,6 +5,7 @@
 package bff
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -77,6 +78,8 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 	if err := p.Claims(&metadata); err != nil {
 		return nil, err
 	}
+	metadata.EndSessionEndpoint = cmp.Or(cfg.endSessionEndpoint, metadata.EndSessionEndpoint)
+	metadata.RevocationEndpoint = cmp.Or(cfg.revocationEndpoint, metadata.RevocationEndpoint)
 	endpoints := []string{p.Endpoint().AuthURL, p.Endpoint().TokenURL, metadata.JWKSURI}
 	optional := []string{p.UserInfoEndpoint(), metadata.EndSessionEndpoint, metadata.RevocationEndpoint, metadata.PAREndpoint}
 	for _, endpoint := range optional {
@@ -126,7 +129,9 @@ func (f providerOptionFunc) applyProvider(c *providerConfig) error {
 }
 
 type providerConfig struct {
-	client *http.Client
+	client             *http.Client
+	endSessionEndpoint string
+	revocationEndpoint string
 }
 
 // WithHTTPClient sets the HTTP client used for the requests to the provider. The default client uses
@@ -137,6 +142,30 @@ func WithHTTPClient(client *http.Client) ProviderOption {
 			return fmt.Errorf("%w: nil http client", ErrInvalidConfig)
 		}
 		c.client = client
+		return nil
+	})
+}
+
+// WithEndSessionEndpoint sets the end session endpoint of OpenID Connect RP-Initiated Logout, for a provider that
+// supports it without publishing it. It replaces the endpoint of the provider metadata.
+func WithEndSessionEndpoint(endpoint string) ProviderOption {
+	return providerOptionFunc(func(c *providerConfig) error {
+		if err := checkURL(endpoint); err != nil {
+			return fmt.Errorf("%w: end session endpoint %w", ErrInvalidConfig, err)
+		}
+		c.endSessionEndpoint = endpoint
+		return nil
+	})
+}
+
+// WithRevocationEndpoint sets the token revocation endpoint (RFC 7009), for a provider that supports it without
+// publishing it. It replaces the endpoint of the provider metadata.
+func WithRevocationEndpoint(endpoint string) ProviderOption {
+	return providerOptionFunc(func(c *providerConfig) error {
+		if err := checkURL(endpoint); err != nil {
+			return fmt.Errorf("%w: revocation endpoint %w", ErrInvalidConfig, err)
+		}
+		c.revocationEndpoint = endpoint
 		return nil
 	})
 }

@@ -53,6 +53,16 @@ func TestNewProvider(t *testing.T) {
 		assert.True(t, p.issParameter)
 	})
 
+	t.Run("endpoint options", func(t *testing.T) {
+		srv := oidctest.NewServer(oidctest.Options{Metadata: map[string]any{"revocation_endpoint": "http://idp.example.com/revoke"}})
+		defer srv.Close()
+		p, err := NewProvider(t.Context(), srv.URL, WithHTTPClient(srv.Client()),
+			WithEndSessionEndpoint("https://idp.example.com/logout"), WithRevocationEndpoint("https://idp.example.com/revoke"))
+		require.NoError(t, err)
+		assert.Equal(t, "https://idp.example.com/logout", p.endSessionEndpoint)
+		assert.Equal(t, "https://idp.example.com/revoke", p.revocationEndpoint)
+	})
+
 	t.Run("issuer mismatch", func(t *testing.T) {
 		srv := oidctest.NewServer(oidctest.Options{Metadata: map[string]any{"issuer": "https://other.example.com"}})
 		defer srv.Close()
@@ -77,6 +87,8 @@ func TestNewProvider(t *testing.T) {
 			{name: "relative issuer", issuer: "/realms/acme"},
 			{name: "issuer with fragment", issuer: "https://idp.example.com#x"},
 			{name: "nil http client", issuer: "https://idp.example.com", opts: []ProviderOption{WithHTTPClient(nil)}},
+			{name: "empty end session endpoint", issuer: "https://idp.example.com", opts: []ProviderOption{WithEndSessionEndpoint("")}},
+			{name: "http revocation endpoint", issuer: "https://idp.example.com", opts: []ProviderOption{WithRevocationEndpoint("http://idp.example.com/revoke")}},
 		}
 		for _, endpoint := range []string{"token_endpoint", "jwks_uri", "end_session_endpoint", "revocation_endpoint",
 			"pushed_authorization_request_endpoint"} {
