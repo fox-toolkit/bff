@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,17 +30,24 @@ const (
 	maxPendingLogins = 3
 	// maxReturnURL bounds the return URL in the login cookie. A page of another site can choose it, and escaped JSON
 	// characters such as & take 6 bytes.
-	maxReturnURL       = 1024
+	maxReturnURL = 1024
+	// maxACRValues bounds the acr_values in the login cookie, once encoded as JSON.
+	maxACRValues       = 256
 	maxPARResponseSize = 1 << 16
+	// authTimeSkew tolerates the clock difference between the provider and the client when checking auth_time.
+	authTimeSkew = time.Minute
 )
 
 // standardPrompts are accepted when the provider does not advertise its prompt values.
 var standardPrompts = []string{"none", "login", "consent", "select_account"}
 
 type loginState struct {
+	// MaxAge is a pointer, so max_age=0 is still checked.
+	MaxAge    *int64 `json:"m,omitempty"`
 	Verifier  string `json:"v"`
 	Nonce     string `json:"n"`
 	ReturnURL string `json:"r"`
+	ACRValues string `json:"a,omitempty"`
 	DPoPKey   []byte `json:"k,omitempty"`
 	// Created is in nanoseconds, so logins started in the same second are ordered.
 	Created int64 `json:"t"`
@@ -49,7 +57,8 @@ type loginState struct {
 // the login flow by navigating to it. After login, the browser is redirected to the URL in the returnUrl query
 // parameter, or to "/" if it is absent. It must be a local URL or a URL of a trusted origin (see [WithTrustedOrigins]),
 // of at most 1024 bytes once encoded as JSON. The optional prompt query parameter is passed to the provider, such as
-// prompt=none for a silent login.
+// prompt=none for a silent login. The optional max_age and acr_values query parameters are passed to the provider, and
+// the callback rejects an ID token whose auth_time or acr does not satisfy them.
 //
 // When Pushed Authorization Requests (PAR, RFC 9126) are used, each login sends a request to the pushed authorization
 // request endpoint of the provider, so the route should be rate limited. If this request fails, the handler responds
@@ -76,11 +85,30 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 			badRequest(w)
 			return
 		}
+		var maxAge *int64
+		if v := q.Get("max_age"); v != "" {
+			// ParseUint rejects a sign, and 32 bits keep the duration in range.
+			n, err := strconv.ParseUint(v, 10, 32)
+			if err != nil {
+				fe.logRejected(r, "invalid max_age", nil)
+				badRequest(w)
+				return
+			}
+			maxAge = new(int64(n))
+		}
+		acrValues := q.Get("acr_values")
+		if acrValues != "" && !fe.validACRValues(acrValues) {
+			fe.logRejected(r, "invalid acr_values", nil)
+			badRequest(w)
+			return
+		}
 		state := randomString()
 		ls := loginState{
 			Verifier:  oauth2.GenerateVerifier(),
 			Nonce:     randomString(),
 			ReturnURL: returnURL,
+			MaxAge:    maxAge,
+			ACRValues: acrValues,
 			Created:   fe.now().UnixNano(),
 		}
 		params := url.Values{
@@ -95,6 +123,12 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		}
 		if prompt != "" {
 			params.Set("prompt", prompt)
+		}
+		if maxAge != nil {
+			params.Set("max_age", strconv.FormatInt(*maxAge, 10))
+		}
+		if acrValues != "" {
+			params.Set("acr_values", acrValues)
 		}
 		if len(fe.cfg.resources) > 0 {
 			// RFC 8707 2.1: the resources apply to the full grant, so their access tokens are requested with the
@@ -226,7 +260,7 @@ func (fe *Frontend) trimPendingLogins(h http.Header, cookies []*http.Cookie) {
 
 // CallbackHandler returns the handler of the redirect URL. It completes the login, creates a new session and redirects
 // to the return URL. If the provider returns an error, such as login_required for prompt=none, it redirects to the
-// return URL without session.
+// return URL without a new session.
 func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 	return func(c *fox.Context) {
 		r := c.Request()
@@ -342,6 +376,9 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(ls.Nonce)) != 1 {
 		return nil, fmt.Errorf("%w: nonce mismatch", errInvalidLogin)
 	}
+	if err := ls.checkAuthentication(idToken); err != nil {
+		return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
+	}
 	var claims struct {
 		SID string `json:"sid"`
 	}
@@ -398,6 +435,35 @@ func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToke
 	return idToken, nil
 }
 
+// checkAuthentication checks the auth_time and acr of the ID token against the max_age and acr_values of the login, as
+// OpenID Connect Core 3.1.3.7 steps 12 and 13 recommend. An acr outside the requested values is rejected, as RFC 9470 5
+// expects of a step-up. The provider authenticates after the login started, so auth_time is compared to its start.
+func (ls loginState) checkAuthentication(idToken *oidc.IDToken) error {
+	if ls.MaxAge == nil && ls.ACRValues == "" {
+		return nil
+	}
+	var claims struct {
+		ACR      string  `json:"acr"`
+		AuthTime float64 `json:"auth_time"`
+	}
+	if err := idToken.Claims(&claims); err != nil {
+		return err
+	}
+	if ls.MaxAge != nil {
+		if claims.AuthTime == 0 {
+			return errors.New("auth_time required")
+		}
+		oldest := time.Unix(0, ls.Created).Add(-time.Duration(*ls.MaxAge)*time.Second - authTimeSkew)
+		if time.Unix(int64(claims.AuthTime), 0).Before(oldest) {
+			return errors.New("auth_time too old")
+		}
+	}
+	if ls.ACRValues != "" && !slices.Contains(strings.Fields(ls.ACRValues), claims.ACR) {
+		return fmt.Errorf("acr mismatch: %q", claims.ACR)
+	}
+	return nil
+}
+
 // checkAudience checks the audiences and the authorized party of a token. Additional audiences are trusted only when
 // azp is the client ID.
 func (fe *Frontend) checkAudience(aud []string, azp string) error {
@@ -423,6 +489,24 @@ func (fe *Frontend) validPrompt(prompt string) bool {
 	}
 	for _, v := range values {
 		if !slices.Contains(supported, v) {
+			return false
+		}
+	}
+	return true
+}
+
+// validACRValues reports whether acr is a non-empty, bounded list of values supported by the provider. Any value is
+// accepted when the provider does not advertise them.
+func (fe *Frontend) validACRValues(acr string) bool {
+	values := strings.Fields(acr)
+	if encoded, _ := json.Marshal(acr); len(values) == 0 || len(encoded)-2 > maxACRValues {
+		return false
+	}
+	if len(fe.provider.acrValues) == 0 {
+		return true
+	}
+	for _, v := range values {
+		if !slices.Contains(fe.provider.acrValues, v) {
 			return false
 		}
 	}

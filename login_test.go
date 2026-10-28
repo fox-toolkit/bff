@@ -234,7 +234,10 @@ func TestSilentLogin(t *testing.T) {
 }
 
 func TestLoginInvalid(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{Metadata: map[string]any{"prompt_values_supported": []string{"none", "login"}}})
+	e := newTestEnv(t, oidctest.Options{Metadata: map[string]any{
+		"prompt_values_supported": []string{"none", "login"},
+		"acr_values_supported":    []string{"mfa"},
+	}})
 	for _, query := range []string{
 		"returnUrl=https://evil.example.com",
 		"returnUrl=//evil.example.com",
@@ -245,6 +248,14 @@ func TestLoginInvalid(t *testing.T) {
 		"prompt=consent",
 		"prompt=none%20login",
 		"prompt=%20",
+		"max_age=-1",
+		"max_age=%2B1",
+		"max_age=1.5",
+		"max_age=abc",
+		"max_age=4294967296",
+		"acr_values=pwd",
+		"acr_values=mfa%20pwd",
+		"acr_values=%20",
 	} {
 		t.Run(query, func(t *testing.T) {
 			rec := e.serve("/bff/login?"+query, nil)
@@ -274,6 +285,50 @@ func TestLoginReturnURLLength(t *testing.T) {
 	rec = e.serve("/bff/login?returnUrl="+url.QueryEscape("/?"+strings.Repeat("&", (maxReturnURL-2)/6)), nil)
 	assert.Equal(t, http.StatusFound, rec.Code)
 	assert.Len(t, rec.Header().Values("Set-Cookie"), 1)
+}
+
+func TestLoginACRValuesLength(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{})
+	longest := strings.Repeat("a", maxACRValues)
+	assert.Equal(t, http.StatusFound, e.serve("/bff/login?acr_values="+longest, nil).Code)
+	assert.Equal(t, http.StatusBadRequest, e.serve("/bff/login?acr_values="+longest+"a", nil).Code)
+	assert.Equal(t, http.StatusBadRequest, e.serve("/bff/login?acr_values="+url.QueryEscape(strings.Repeat("<", maxACRValues/6+1)), nil).Code)
+}
+
+func TestCallbackAuthentication(t *testing.T) {
+	now := time.Now().Unix()
+	cases := []struct {
+		claims map[string]any
+		name   string
+		query  string
+		code   int
+	}{
+		{name: "recent auth_time", query: "max_age=600", claims: map[string]any{"auth_time": now}, code: http.StatusFound},
+		{name: "auth_time within skew", query: "max_age=600", claims: map[string]any{"auth_time": now - 630}, code: http.StatusFound},
+		{name: "max_age 0", query: "max_age=0", claims: map[string]any{"auth_time": now}, code: http.StatusFound},
+		{name: "requested acr", query: "acr_values=pwd%20mfa", claims: map[string]any{"acr": "mfa"}, code: http.StatusFound},
+		{name: "nothing requested", claims: map[string]any{"auth_time": "invalid"}, code: http.StatusFound},
+		{name: "missing auth_time", query: "max_age=600", code: http.StatusBadRequest},
+		{name: "invalid auth_time", query: "max_age=600", claims: map[string]any{"auth_time": "invalid"}, code: http.StatusBadRequest},
+		{name: "stale auth_time", query: "max_age=600", claims: map[string]any{"auth_time": now - 720}, code: http.StatusBadRequest},
+		{name: "stale auth_time for max_age 0", query: "max_age=0", claims: map[string]any{"auth_time": now - 120}, code: http.StatusBadRequest},
+		{name: "missing acr", query: "acr_values=mfa", code: http.StatusBadRequest},
+		{name: "other acr", query: "acr_values=mfa", claims: map[string]any{"acr": "pwd"}, code: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{Claims: tc.claims})
+			rec, callback := e.startLogin(t, tc.query)
+			authorize, err := url.Parse(rec.Header().Get("Location"))
+			require.NoError(t, err)
+			want, err := url.ParseQuery(tc.query)
+			require.NoError(t, err)
+			for k := range want {
+				assert.Equal(t, want.Get(k), authorize.Query().Get(k))
+			}
+			assert.Equal(t, tc.code, e.serve(callback, requestCookies(t, rec.Header())).Code)
+		})
+	}
 }
 
 func TestCallbackInvalid(t *testing.T) {

@@ -188,6 +188,9 @@ func (a *clientAuth) requestObject(params url.Values, alg string, now time.Time)
 		// RFC 8707 2.1: several resources are an array of strings.
 		if len(v) > 1 {
 			claims[k] = v
+		} else if k == "max_age" {
+			// OpenID Connect Core 6.1: max_age is a number.
+			claims[k] = json.Number(params.Get(k))
 		} else {
 			claims[k] = params.Get(k)
 		}

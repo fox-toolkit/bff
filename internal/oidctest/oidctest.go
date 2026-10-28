@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -635,6 +636,11 @@ func (s *Server) verifyRequestObject(form url.Values, clientID string) (url.Valu
 				}
 				params.Add(k, str)
 			}
+			continue
+		}
+		// OpenID Connect Core 6.1: max_age is a number.
+		if n, ok := v.(float64); ok && k == "max_age" {
+			params.Set(k, strconv.FormatFloat(n, 'f', -1, 64))
 			continue
 		}
 		str, ok := v.(string)

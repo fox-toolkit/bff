@@ -28,6 +28,7 @@ type Provider struct {
 	revocationEndpoint   string
 	parEndpoint          string
 	promptValues         []string
+	acrValues            []string
 	dpopAlgs             []string
 	idTokenAlgs          []string
 	authMethods          []string
@@ -66,6 +67,7 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		RevocationEndpoint   string   `json:"revocation_endpoint"`
 		PAREndpoint          string   `json:"pushed_authorization_request_endpoint"`
 		PromptValues         []string `json:"prompt_values_supported"`
+		ACRValues            []string `json:"acr_values_supported"`
 		DPoPAlgs             []string `json:"dpop_signing_alg_values_supported"`
 		IDTokenAlgs          []string `json:"id_token_signing_alg_values_supported"`
 		AuthMethods          []string `json:"token_endpoint_auth_methods_supported"`
@@ -105,6 +107,7 @@ func NewProvider(ctx context.Context, issuer string, opts ...ProviderOption) (*P
 		revocationEndpoint:   metadata.RevocationEndpoint,
 		parEndpoint:          metadata.PAREndpoint,
 		promptValues:         metadata.PromptValues,
+		acrValues:            metadata.ACRValues,
 		dpopAlgs:             metadata.DPoPAlgs,
 		idTokenAlgs:          metadata.IDTokenAlgs,
 		authMethods:          metadata.AuthMethods,

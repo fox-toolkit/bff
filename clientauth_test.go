@@ -172,6 +172,25 @@ func TestRequestObject(t *testing.T) {
 	}
 }
 
+func TestRequestObjectStepUp(t *testing.T) {
+	keys := generateKeys(t)
+	opts := oidctest.Options{
+		PAR:       true,
+		ClientKey: keys["ec"].Public(),
+		Metadata:  map[string]any{"token_endpoint_auth_methods_supported": bothMethods},
+		Claims:    map[string]any{"auth_time": time.Now().Unix(), "acr": "mfa"},
+	}
+	e := newTestEnvWithClient(t, opts, func(c *Client) {
+		c.ClientSecret, c.ClientKey = "", keys["ec"]
+	}, WithRequestObject(true))
+	assert.Equal(t, http.StatusFound, e.login(t, "max_age=600&acr_values=mfa", nil).Code)
+
+	objects := e.idp.RequestObjects()
+	require.Len(t, objects, 1)
+	assert.Equal(t, float64(600), objects[0].Claims["max_age"])
+	assert.Equal(t, "mfa", objects[0].Claims["acr_values"])
+}
+
 func TestRequestObjectResources(t *testing.T) {
 	keys := generateKeys(t)
 	cases := []struct {
