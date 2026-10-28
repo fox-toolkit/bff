@@ -124,6 +124,22 @@ func TestNewFrontend(t *testing.T) {
 		assert.Equal(t, "X-Csrf", fe.cfg.csrfHeader)
 	})
 
+	t.Run("same site trusted origins", func(t *testing.T) {
+		for redirect, origin := range map[string]string{
+			"https://BFF.EXAMPLE.COM/bff/callback":    "https://app.example.com",
+			"https://bff.BÜCHER.example/bff/callback": "https://app.xn--bcher-kva.example",
+			"https://[2001:DB8::1]/bff/callback":      "https://[2001:db8::1]",
+			"http://localhost:8080/bff/callback":      "http://localhost:5173",
+			"http://[::1]:8080/bff/callback":          "http://[::1]:5173",
+			"https://127.0.0.1:8443/bff/callback":     "https://127.0.0.1:5173",
+		} {
+			c := valid()
+			c.RedirectURL = redirect
+			_, err := NewFrontend(c, nopAEAD{}, WithTrustedOrigins(origin))
+			assert.NoError(t, err)
+		}
+	})
+
 	t.Run("loopback http redirect", func(t *testing.T) {
 		c := valid()
 		c.RedirectURL = "http://localhost:8080/bff/callback"
@@ -164,6 +180,11 @@ func TestNewFrontend(t *testing.T) {
 		{name: "uppercase trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://SPA.example.com")}},
 		{name: "trusted origin with userinfo", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://user@spa.example.com")}},
 		{name: "trusted origin with default port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com:443")}},
+		{name: "cross-site trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://app.example.org")}},
+		{name: "trusted origin on a public suffix", client: func(c *Client) { c.RedirectURL = "https://bff.vercel.app/bff/callback" }, opts: []Option{WithTrustedOrigins("https://app.vercel.app")}},
+		{name: "trusted origin with another scheme", client: func(c *Client) { c.RedirectURL = "https://localhost:8443/bff/callback" }, opts: []Option{WithTrustedOrigins("http://localhost:5173")}},
+		{name: "trusted origin on another loopback host", client: func(c *Client) { c.RedirectURL = "http://localhost:8080/bff/callback" }, opts: []Option{WithTrustedOrigins("http://127.0.0.1:5173")}},
+		{name: "trusted origin on another ip", client: func(c *Client) { c.RedirectURL = "https://10.0.0.1/bff/callback" }, opts: []Option{WithTrustedOrigins("https://10.1.0.1")}},
 		{name: "trusted origin with empty port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com:")}},
 		{name: "loopback trusted origin with default port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("http://localhost:80")}},
 		{name: "unicode trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://bücher.example")}},
@@ -283,12 +304,12 @@ func TestWithResources(t *testing.T) {
 
 func TestTrustedOrigins(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{},
-		WithTrustedOrigins("https://spa.example.com", "https://admin.example.com", "http://localhost:5173"),
-		WithTrustedOrigins("https://spa.example.com", "http://[::1]:5173"),
+		WithTrustedOrigins("https://spa.example.com", "https://admin.example.com"),
+		WithTrustedOrigins("https://spa.example.com"),
 	)
 	e.mount(t, "/api")
 	e.mountLogout(t)
-	assert.Equal(t, []string{"https://spa.example.com", "https://admin.example.com", "http://localhost:5173", "http://[::1]:5173"}, e.fe.cfg.trustedOrigins)
+	assert.Equal(t, []string{"https://spa.example.com", "https://admin.example.com"}, e.fe.cfg.trustedOrigins)
 
 	t.Run("requests", func(t *testing.T) {
 		cookies := e.loggedIn(t)
@@ -299,7 +320,6 @@ func TestTrustedOrigins(t *testing.T) {
 			code   int
 		}{
 			{name: "trusted", site: "same-site", origin: "https://spa.example.com", code: http.StatusOK},
-			{name: "loopback", site: "cross-site", origin: "http://localhost:5173", code: http.StatusOK},
 			{name: "other subdomain", site: "same-site", origin: "https://evil.example.com", code: http.StatusForbidden},
 			{name: "other scheme", site: "cross-site", origin: "http://spa.example.com", code: http.StatusForbidden},
 			{name: "old browser", origin: "https://spa.example.com", code: http.StatusOK},

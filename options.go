@@ -19,6 +19,8 @@ import (
 	"github.com/fox-toolkit/bff/store"
 	"github.com/fox-toolkit/fox"
 	"golang.org/x/net/http/httpguts"
+	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 )
 
 var ErrInvalidConfig = errors.New("invalid config")
@@ -182,8 +184,9 @@ var signingAlgs = []string{
 // cross-origin with the BFF, and lets a login return to a URL of these origins. An origin has the form
 // "scheme://host[:port]" sent in the Origin header, in lowercase and without the default port, with https or, on a
 // loopback host, http. The application and the BFF must be same site, such as https://app.example.com and
-// https://bff.example.com, as the session cookie is SameSite=Strict. A CORS middleware must allow only these origins,
-// with credentials. The BFF should also require the header of [WithCSRFHeader], as recommended by RFC 10017.
+// https://bff.example.com, as the session cookie is SameSite=Strict. [NewFrontend] fails if an origin is not same site
+// with the redirect URL of the client. A CORS middleware must allow only these origins, with credentials. The BFF
+// should also require the header of [WithCSRFHeader], as recommended by RFC 10017.
 func WithTrustedOrigins(origins ...string) Option {
 	return optionFunc(func(c *config) error {
 		for _, origin := range origins {
@@ -208,6 +211,26 @@ func validOrigin(origin string) bool {
 		return false
 	}
 	return net.ParseIP(host) != nil || strings.Trim(host, "abcdefghijklmnopqrstuvwxyz0123456789.-") == ""
+}
+
+// sameSite reports whether the origin and the URL are same site, as browsers compare them for SameSite cookies. A
+// host without a registrable domain, such as localhost or an IP address, is only same site with itself.
+func sameSite(origin, u *url.URL) bool {
+	if origin.Scheme != u.Scheme {
+		return false
+	}
+	a := origin.Hostname()
+	// The URL may have an uppercase or Unicode host, which browsers convert to ASCII lowercase.
+	b, err := idna.Lookup.ToASCII(u.Hostname())
+	if err != nil {
+		b = strings.ToLower(u.Hostname())
+	}
+	siteA, errA := publicsuffix.EffectiveTLDPlusOne(a)
+	siteB, errB := publicsuffix.EffectiveTLDPlusOne(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return siteA == siteB
 }
 
 // PushedAuthorization defines when a [Frontend] pushes its authorization requests to the provider, as defined by

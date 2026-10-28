@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"time"
 
@@ -57,6 +58,12 @@ func NewFrontend(client Client, aead AEAD, opts ...Option) (*Frontend, error) {
 	}
 	if cfg.idleTimeout > cfg.absoluteTimeout {
 		return nil, fmt.Errorf("%w: idle timeout exceeds absolute timeout", ErrInvalidConfig)
+	}
+	redirect, _ := url.Parse(client.RedirectURL)
+	for _, origin := range cfg.trustedOrigins {
+		if u, _ := url.Parse(origin); !sameSite(u, redirect) {
+			return nil, fmt.Errorf("%w: trusted origin %q not same site with the redirect url", ErrInvalidConfig, origin)
+		}
 	}
 
 	p := client.Provider
