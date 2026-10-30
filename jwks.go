@@ -150,8 +150,6 @@ func (k *keySet) refresh(ctx context.Context, force bool) *inflight {
 
 // update requests the keys. The previous keys are kept when the request fails.
 func (k *keySet) update(ctx context.Context, f *inflight, now time.Time) {
-	ctx, cancel := context.WithTimeout(ctx, minKeysRefetch)
-	defer cancel()
 	f.keys, f.err = k.requestKeys(ctx)
 
 	k.mu.Lock()
