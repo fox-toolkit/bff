@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -61,9 +62,7 @@ func TestLogout(t *testing.T) {
 func (e *testEnv) doForm(method, target string, cookies []*http.Cookie, header http.Header, form url.Values) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, appOrigin+target, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	for k, v := range header {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, header)
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}

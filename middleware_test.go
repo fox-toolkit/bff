@@ -6,6 +6,7 @@ package bff
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -46,9 +47,7 @@ func (e *testEnv) mount(t *testing.T, pattern string, opts ...fox.RouteOption) *
 
 func (e *testEnv) do(method, target string, cookies []*http.Cookie, header http.Header) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, appOrigin+target, nil)
-	for k, v := range header {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, header)
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
