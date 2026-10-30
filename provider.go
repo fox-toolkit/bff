@@ -39,8 +39,8 @@ type Provider struct {
 	requireRequestObject bool
 }
 
-// providerTimeout is not shorter than the bounds of the refreshes and of the key set requests.
-const providerTimeout = 30 * time.Second
+// The token response arrives within refreshTimeout with time left to store the session.
+const providerTimeout = 10 * time.Second
 
 // NewProvider retrieves the provider metadata of the issuer with OpenID Connect Discovery. The issuer must use https,
 // except for a loopback host.
@@ -138,7 +138,7 @@ type providerConfig struct {
 }
 
 // WithHTTPClient sets the HTTP client used for the requests to the provider. The default client uses
-// [http.DefaultTransport] and stops a request after 30 seconds.
+// [http.DefaultTransport] and stops a request after 10 seconds.
 func WithHTTPClient(client *http.Client) ProviderOption {
 	return providerOptionFunc(func(c *providerConfig) error {
 		if client == nil {

@@ -24,7 +24,7 @@ const (
 	// the same session.
 	refreshReuse = time.Minute
 	// refreshTimeout bounds a refresh, which is not canceled with the request that started it.
-	refreshTimeout = 30 * time.Second
+	refreshTimeout = 15 * time.Second
 	// endSessionTimeout bounds the end of a session, which waits for a refresh in flight.
 	endSessionTimeout = time.Minute
 )
@@ -54,10 +54,24 @@ type sessionTokens struct {
 	at     time.Time
 	lock   chan struct{}
 	latest *session
+	failed map[string]tokenFailure
 	refs   int
 	// epoch changes when the tokens are forgotten, so a call that started before does not keep its result.
 	epoch int
+	calls int
 }
+
+type tokenFailure struct {
+	err  error
+	call int
+}
+
+type sharedError struct {
+	err error
+}
+
+func (e *sharedError) Error() string { return e.err.Error() }
+func (e *sharedError) Unwrap() error { return e.err }
 
 func newTokenGroup(now func() time.Time) *tokenGroup {
 	return &tokenGroup{now: now, sessions: make(map[[sha256.Size]byte]*sessionTokens)}
@@ -66,8 +80,19 @@ func newTokenGroup(now func() time.Time) *tokenGroup {
 // Do runs fn with the lock of the session id. fn receives the latest tokens of the session kept by a previous call, or
 // nil, and returns the session to keep, or nil, even when it fails.
 func (g *tokenGroup) Do(ctx context.Context, id string, fn func(latest *session) (*session, error)) error {
+	return g.do(ctx, id, nil, func(latest *session, _ error) (*session, error) { return fn(latest) })
+}
+
+// Request is like Do for a token request of the resource. When fn returns a sharedError, the calls for the same
+// resource that waited for the lock receive its error as shared. The provider receives one token request for all of
+// them.
+func (g *tokenGroup) Request(ctx context.Context, id, resource string, fn func(latest *session, shared error) (*session, error)) error {
+	return g.do(ctx, id, &resource, fn)
+}
+
+func (g *tokenGroup) do(ctx context.Context, id string, resource *string, fn func(latest *session, shared error) (*session, error)) error {
 	key := sha256.Sum256([]byte(id))
-	t := g.acquire(key)
+	t, calls := g.acquire(key)
 	defer g.release(key, t)
 	select {
 	case t.lock <- struct{}{}:
@@ -77,19 +102,42 @@ func (g *tokenGroup) Do(ctx context.Context, id string, fn func(latest *session)
 	defer func() { <-t.lock }()
 
 	g.mu.Lock()
+	var shared error
+	if resource != nil {
+		if f, ok := t.failed[*resource]; ok && f.call > calls {
+			shared = f.err
+		}
+	}
 	latest, epoch := t.latest, t.epoch
 	if latest != nil && g.now().Sub(t.at) >= refreshReuse {
 		latest = nil
 	}
 	g.mu.Unlock()
 
-	keep, err := fn(latest)
+	keep, err := fn(latest, shared)
+	se, failed := errors.AsType[*sharedError](err)
+	if failed {
+		err = se.err
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	t.calls++
+	if t.epoch != epoch {
+		return err
+	}
 	if keep != nil {
-		g.mu.Lock()
-		if t.epoch == epoch {
-			t.latest, t.at = keep, g.now()
+		t.latest, t.at = keep, g.now()
+	}
+	switch {
+	case resource == nil, shared != nil:
+	case failed:
+		if t.failed == nil {
+			t.failed = make(map[string]tokenFailure)
 		}
-		g.mu.Unlock()
+		t.failed[*resource] = tokenFailure{err: err, call: t.calls}
+	default:
+		delete(t.failed, *resource)
 	}
 	return err
 }
@@ -104,14 +152,14 @@ func (g *tokenGroup) Forget(id string) {
 		return
 	}
 	// A request holding the lock keeps using it, so the entry is only deleted when no request holds it.
-	t.latest, t.at = nil, time.Time{}
+	t.latest, t.at, t.failed = nil, time.Time{}, nil
 	t.epoch++
 	if t.refs == 0 {
 		delete(g.sessions, key)
 	}
 }
 
-func (g *tokenGroup) acquire(key [sha256.Size]byte) *sessionTokens {
+func (g *tokenGroup) acquire(key [sha256.Size]byte) (*sessionTokens, int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
@@ -129,7 +177,7 @@ func (g *tokenGroup) acquire(key [sha256.Size]byte) *sessionTokens {
 		g.sessions[key] = t
 	}
 	t.refs++
-	return t
+	return t, t.calls
 }
 
 func (g *tokenGroup) release(key [sha256.Size]byte, t *sessionTokens) {
@@ -141,12 +189,10 @@ func (g *tokenGroup) release(key [sha256.Size]byte, t *sessionTokens) {
 	}
 }
 
-// updateTokens brings the tokens of s up to date with the latest tokens of its session, then calls update with the
-// lock of the session and tr started. update reports whether it changed s, even when it fails. updateTokens reports
-// whether s changed.
-func (fe *Frontend) updateTokens(ctx context.Context, s *session, st sessionState, tr *tokenRequest, update func() (bool, error)) (bool, error) {
+// updateTokens runs update with the lock of the session. It reports whether s changed.
+func (fe *Frontend) updateTokens(ctx context.Context, s *session, st sessionState, resource string, tr *tokenRequest, update func() (bool, error)) (bool, error) {
 	changed := false
-	err := fe.tokens.Do(ctx, s.LogoutCSRFToken, func(latest *session) (*session, error) {
+	err := fe.tokens.Request(ctx, s.LogoutCSRFToken, resource, func(latest *session, shared error) (*session, error) {
 		tr.start(ctx)
 		if st.id != "" {
 			// Other replicas may have changed the stored session. The tokens kept in memory may be newer, as the
@@ -163,7 +209,12 @@ func (fe *Frontend) updateTokens(ctx context.Context, s *session, st sessionStat
 			s.adopt(latest)
 			changed = true
 		}
-		updated, err := update()
+		updated, err := false, shared
+		if shared == nil {
+			if updated, err = update(); err != nil {
+				err = &sharedError{err}
+			}
+		}
 		changed = changed || updated
 		if !changed {
 			return nil, err
@@ -216,7 +267,7 @@ func (fe *Frontend) loadSession(ctx context.Context, id string) (*session, error
 // refresh renews the access token of s when it is stale. It reports whether s changed. It returns errSessionEnded when
 // the provider rejects the refresh token.
 func (fe *Frontend) refresh(ctx context.Context, s *session, st sessionState, tr *tokenRequest) (bool, error) {
-	return fe.updateTokens(ctx, s, st, tr, func() (bool, error) {
+	return fe.updateTokens(ctx, s, st, "", tr, func() (bool, error) {
 		if !s.stale(fe.now()) {
 			return false, nil
 		}

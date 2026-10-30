@@ -724,14 +724,20 @@ func TestResourceBearerUnderDPoP(t *testing.T) {
 
 // failRefresh answers 503 to the refresh token grants once enabled.
 type failRefresh struct {
-	base http.RoundTripper
-	fail atomic.Bool
+	base    http.RoundTripper
+	release chan struct{}
+	calls   atomic.Int32
+	fail    atomic.Bool
 }
 
 func (f *failRefresh) RoundTrip(r *http.Request) (*http.Response, error) {
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	if f.fail.Load() && bytes.Contains(body, []byte("grant_type=refresh_token")) {
+		f.calls.Add(1)
+		if f.release != nil {
+			<-f.release
+		}
 		return &http.Response{
 			StatusCode: http.StatusServiceUnavailable,
 			Header:     http.Header{"Content-Type": {"application/json"}},

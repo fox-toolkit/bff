@@ -186,7 +186,7 @@ func (rs *requestState) accessToken(ctx context.Context, resource string) (resou
 
 	var tr tokenRequest
 	defer tr.stop()
-	changed, err := fe.updateTokens(ctx, s, rs.st, &tr, func() (bool, error) {
+	changed, err := fe.updateTokens(ctx, s, rs.st, resource, &tr, func() (bool, error) {
 		if t, ok := s.Resources[resource]; ok && !t.stale(fe.now()) {
 			return false, nil
 		}

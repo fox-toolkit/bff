@@ -6,6 +6,7 @@ package bff
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"net/http"
 	"sync"
@@ -117,6 +118,73 @@ func TestTokenGroupForgetDuringDo(t *testing.T) {
 		return nil, nil
 	}))
 	assert.Empty(t, g.sessions)
+}
+
+func TestTokenGroupSharesFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		shared bool
+	}{
+		{name: "token request", err: &sharedError{errors.New("unavailable")}, shared: true},
+		{name: "other", err: errors.New("store")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newTokenGroup(time.Now)
+			started := make(chan struct{})
+			release := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				done <- g.Request(t.Context(), "id", "", func(*session, error) (*session, error) {
+					close(started)
+					<-release
+					return nil, tc.err
+				})
+			}()
+			<-started
+
+			var ran atomic.Int32
+			run := func(_ *session, shared error) (*session, error) {
+				if shared != nil {
+					return nil, shared
+				}
+				ran.Add(1)
+				return nil, nil
+			}
+			errs := make(chan error, 3)
+			go func() { errs <- g.Request(t.Context(), "id", "", run) }()
+			go func() { errs <- g.Request(t.Context(), "id", billing, run) }()
+			go func() {
+				errs <- g.Do(t.Context(), "id", func(s *session) (*session, error) { return run(s, nil) })
+			}()
+			key := sha256.Sum256([]byte("id"))
+			require.Eventually(t, func() bool {
+				g.mu.Lock()
+				defer g.mu.Unlock()
+				return g.sessions[key].refs == 4
+			}, time.Second, time.Millisecond)
+			close(release)
+
+			assert.Error(t, <-done)
+			failures := 0
+			for range 3 {
+				if <-errs != nil {
+					failures++
+				}
+			}
+			if tc.shared {
+				assert.Equal(t, 1, failures)
+				assert.Equal(t, int32(2), ran.Load())
+			} else {
+				assert.Zero(t, failures)
+				assert.Equal(t, int32(3), ran.Load())
+			}
+
+			require.NoError(t, g.Request(t.Context(), "id", "", run))
+			assert.Empty(t, g.sessions)
+		})
+	}
 }
 
 func TestRefreshedIDToken(t *testing.T) {

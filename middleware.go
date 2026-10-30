@@ -193,7 +193,10 @@ func (fe *Frontend) currentSession(r *http.Request, h http.Header) (*session, se
 		if errors.Is(err, errSessionEnded) || err != nil && expired && s.RefreshToken == "" {
 			fe.logger.InfoContext(ctx, "session ended", "path", r.URL.Path, "error", err)
 			fe.tokens.Forget(s.LogoutCSRFToken)
-			return nil, st, fe.deleteSession(ctx, h, st)
+			// The token request may have used up the time of ctx.
+			endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
+			defer cancel()
+			return nil, st, fe.deleteSession(endCtx, h, st)
 		}
 		if changed {
 			dirty, writeCtx = true, tr.ctx
