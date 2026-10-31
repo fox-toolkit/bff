@@ -32,6 +32,7 @@ type plan struct {
 	key          bool   // for private_key_jwt
 	storeOnly    bool
 	resourceOnly bool
+	noLogin      string // module that runs without login
 	options      func(module string) []bff.Option
 	run          func(b *browser, module string)
 }
@@ -47,6 +48,8 @@ var plans = []plan{
 	{name: "oidcc-basic", options: userInfo},
 	{
 		name: "oidcc-config",
+		// This module finishes when the client fetches the discovery, and fails on any later request.
+		noLogin: "oidcc-client-test-discovery-openid-config",
 		options: func(m string) []bff.Option {
 			// This module finishes when the client fetches the key set, and fails on any later request.
 			if m == "oidcc-client-test-discovery-jwks-uri-keys" {
@@ -291,10 +294,7 @@ func (r *run) module(t *testing.T, plan, module string, variant json.RawMessage)
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(flow, "bff: %v\n", err)
-	} else if info, err := r.suite.info(id); err == nil && info.Status == "FINISHED" {
-		// The module only checks the discovery, and fails on any later request.
-		_, _ = fmt.Fprintln(flow, "module finished at startup")
-	} else {
+	} else if module != r.plan.noLogin {
 		r.handler.Store(&h)
 		b := newBrowser(r.baseURL, flow)
 		b.login()
