@@ -79,7 +79,7 @@ func (p providerKeySet) VerifySignature(ctx context.Context, jwt string) ([]byte
 }
 
 func (k *keySet) verify(ctx context.Context, jwt string, fromProvider bool) ([]byte, error) {
-	jws, err := jose.ParseSigned(jwt, jwsAlgs)
+	jws, err := jose.ParseSignedCompact(jwt, jwsAlgs)
 	if err != nil {
 		return nil, err
 	}

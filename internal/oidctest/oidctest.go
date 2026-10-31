@@ -591,7 +591,7 @@ func (s *Server) verifyRequestObject(form url.Values, clientID string) (url.Valu
 		}
 	}
 	algs := []jose.SignatureAlgorithm{jose.ES256, jose.PS256, jose.RS256, jose.EdDSA}
-	jws, err := jose.ParseSigned(form.Get("request"), algs)
+	jws, err := jose.ParseSignedCompact(form.Get("request"), algs)
 	if err != nil {
 		return nil, err
 	}
@@ -675,7 +675,7 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 // returns the client ID.
 func (s *Server) verifyAssertion(r *http.Request) (string, bool) {
 	algs := []jose.SignatureAlgorithm{jose.ES256, jose.PS256, jose.RS256, jose.EdDSA}
-	jws, err := jose.ParseSigned(r.PostForm.Get("client_assertion"), algs)
+	jws, err := jose.ParseSignedCompact(r.PostForm.Get("client_assertion"), algs)
 	if err != nil {
 		return "", false
 	}
@@ -723,7 +723,7 @@ var ErrDPoPNonce = errors.New("dpop nonce required")
 // VerifyDPoPProof verifies the DPoP proof of a request received by a server, as defined by RFC 9449 4.3, and returns
 // the JWK thumbprint of its key. The proof must be bound to the access token and have the nonce when they are not empty.
 func VerifyDPoPProof(r *http.Request, accessToken, nonce string) (string, error) {
-	jws, err := jose.ParseSigned(r.Header.Get("DPoP"), []jose.SignatureAlgorithm{jose.ES256})
+	jws, err := jose.ParseSignedCompact(r.Header.Get("DPoP"), []jose.SignatureAlgorithm{jose.ES256})
 	if err != nil {
 		return "", err
 	}
