@@ -134,8 +134,8 @@ func WithDPoP(enable bool) Option {
 }
 
 // WithSigningAlgorithms restricts the algorithms accepted for the signature of the ID tokens and logout tokens. They
-// should include the algorithm registered for the client at the provider. Each call adds to the algorithms of the
-// previous ones. By default, the algorithms advertised by the provider are accepted.
+// should include the algorithm registered for the client at the provider. By default, the algorithms advertised by
+// the provider are accepted.
 func WithSigningAlgorithms(algs ...string) Option {
 	return optionFunc(func(c *config) error {
 		for _, alg := range algs {
@@ -150,8 +150,7 @@ func WithSigningAlgorithms(algs ...string) Option {
 
 // WithResources declares the protected resources the frontend requests access tokens for, as defined by RFC 8707.
 // Each resource is an absolute URI without fragment, usually the base URI of an API. The resources are requested at
-// login, and the access token of a resource is obtained with [ResourceTransport] or [ResourceAccessToken]. Each call
-// adds to the resources of the previous ones.
+// login, and a route obtains the access tokens of its resources with [ForResource].
 func WithResources(resources ...string) Option {
 	return optionFunc(func(c *config) error {
 		for _, resource := range resources {

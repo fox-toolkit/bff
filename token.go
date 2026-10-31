@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,10 +16,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-var (
-	errUndeclaredResource = errors.New("undeclared resource")
-	errResponseStarted    = errors.New("response already started")
-)
+var errRouteResource = errors.New("resource not declared on the route")
 
 // AccessToken returns the access token of a request authenticated by [Frontend.Authenticate]. It reports false for an
 // anonymous request and for a request not handled by the middleware. A DPoP-bound access token must be sent with
@@ -30,79 +26,56 @@ func AccessToken(ctx context.Context) (*oauth2.Token, bool) {
 	if !ok {
 		return nil, false
 	}
-	t, _, err := rs.accessToken(ctx, "")
-	if err != nil {
+	t, ok := rs.accessToken()
+	if !ok {
 		return nil, false
 	}
 	return t.token(), true
 }
 
 // ResourceAccessToken returns the access token of the resource for a request authenticated by [Frontend.Authenticate],
-// as defined by RFC 8707. The resource must be declared with [WithResources]. The token is requested from the provider
-// when the session has none or when it expires. It returns [ErrNoSession] for an anonymous request, for a request not
-// handled by the middleware and when the provider ends the session. A DPoP-bound access token must be sent with
+// as defined by RFC 8707. It reports false for an anonymous request, for a request not handled by the middleware and
+// for a resource that the route does not declare with [ForResource]. A DPoP-bound access token must be sent with
 // [ResourceTransport].
-func ResourceAccessToken(ctx context.Context, resource string) (*oauth2.Token, error) {
+func ResourceAccessToken(ctx context.Context, resource string) (*oauth2.Token, bool) {
 	rs, ok := ctx.Value(sessionKey{}).(*requestState)
 	if !ok {
-		return nil, ErrNoSession
+		return nil, false
 	}
-	t, _, err := rs.accessToken(ctx, resource)
-	if err != nil {
-		return nil, err
+	t, ok := rs.resourceToken(resource)
+	if !ok {
+		return nil, false
 	}
-	return t.token(), nil
+	return t.token(), true
 }
 
 // Transport returns an [http.RoundTripper] that sets the Authorization header with the access token of the request, as
 // returned by [AccessToken]. For a DPoP-bound access token, it also adds a DPoP proof. It does not add an access token
 // to an anonymous request. A nil base uses [http.DefaultTransport].
 func Transport(base http.RoundTripper) http.RoundTripper {
-	return newTransport(base, "")
+	return newTransport(base, "", false)
 }
 
 // ResourceTransport returns an [http.RoundTripper] that sets the Authorization header with the access token of the
 // resource, as returned by [ResourceAccessToken]. For a DPoP-bound access token, it also adds a DPoP proof. It does not
-// add an access token to an anonymous request or to a request for a resource that is not declared with [WithResources].
-// When the access token cannot be obtained, the request is not sent and the reverse proxy receives the error. Use
-// [ProxyErrorHandler] to respond with the unauthorized handler instead of 502 Bad Gateway when the session has ended.
+// add an access token to an anonymous request or to a request for a resource that the route does not declare with
+// [ForResource]. A nil base uses [http.DefaultTransport].
 func ResourceTransport(base http.RoundTripper, resource string) http.RoundTripper {
-	return newTransport(base, resource)
+	return newTransport(base, resource, true)
 }
 
-// ProxyErrorHandler is the ErrorHandler of an [net/http/httputil.ReverseProxy] that uses [ResourceTransport]. When the
-// session ends while the access token is requested, it responds like a request without session (see
-// [WithUnauthorizedHandler]). Other errors respond with 502 Bad Gateway.
-func ProxyErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	rs, ok := r.Context().Value(sessionKey{}).(*requestState)
-	if !ok || rs.c == nil {
-		log.Printf("bff: proxy error: %v", err)
-		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-		return
-	}
-	switch {
-	case errors.Is(err, ErrNoSession):
-		rs.fe.cfg.unauthorized(rs.c)
-	case errors.Is(err, errStore):
-		rs.fe.logFailed(rs.request, "session store", err)
-		internalError(w)
-	default:
-		rs.fe.logFailed(rs.request, "proxy", err)
-		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-	}
-}
-
-func newTransport(base http.RoundTripper, resource string) *transport {
+func newTransport(base http.RoundTripper, resource string, scoped bool) *transport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &transport{base: base, nonces: newNonceCache(), resource: resource}
+	return &transport{base: base, nonces: newNonceCache(), resource: resource, scoped: scoped}
 }
 
 type transport struct {
 	base     http.RoundTripper
 	nonces   *nonceCache
 	resource string
+	scoped   bool
 }
 
 func (t *transport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -118,20 +91,19 @@ func (t *transport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func (t *transport) send(r *http.Request) (*http.Response, error) {
 	rs, ok := r.Context().Value(sessionKey{}).(*requestState)
-	if !ok || crossHostRedirect(r) {
+	if !ok || rs.session == nil || crossHostRedirect(r) {
 		return t.base.RoundTrip(r)
 	}
-	token, dpopKey, err := rs.accessToken(r.Context(), t.resource)
-	switch {
-	case errors.Is(err, ErrNoSession) && rs.anonymous:
+	var token resourceToken
+	if t.scoped {
+		if token, ok = rs.resourceToken(t.resource); !ok {
+			rs.fe.logFailed(rs.request, "resource access token", fmt.Errorf("%w: %q", errRouteResource, t.resource))
+			return t.base.RoundTrip(r)
+		}
+	} else if token, ok = rs.accessToken(); !ok {
 		return t.base.RoundTrip(r)
-	case errors.Is(err, errUndeclaredResource):
-		rs.fe.logFailed(rs.request, "resource access token", err)
-		return t.base.RoundTrip(r)
-	case err != nil:
-		return nil, err
 	}
-	if dpopKey != nil {
+	if dpopKey := rs.session.DPoPKey; dpopKey != nil {
 		key, err := parseDPoPKey(dpopKey)
 		if err != nil {
 			return nil, err
@@ -154,123 +126,22 @@ func crossHostRedirect(r *http.Request) bool {
 	return origin != r && !strings.EqualFold(origin.URL.Host, r.URL.Host)
 }
 
-// accessToken returns the access token of the resource, or the access token of the session when the resource is empty,
-// with the DPoP key of the session.
-func (rs *requestState) accessToken(ctx context.Context, resource string) (resourceToken, []byte, error) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
+// accessToken returns the access token of the session.
+func (rs *requestState) accessToken() (resourceToken, bool) {
 	s := rs.session
-	if s == nil {
-		return resourceToken{}, nil, ErrNoSession
+	if s == nil || s.AccessToken == "" {
+		return resourceToken{}, false
 	}
-	if resource == "" {
-		if s.AccessToken == "" {
-			return resourceToken{}, nil, ErrNoSession
-		}
-		return resourceToken{AccessToken: s.AccessToken, TokenType: s.TokenType, Expiry: s.Expiry}, s.DPoPKey, nil
-	}
-
-	fe := rs.fe
-	if !slices.Contains(fe.cfg.resources, resource) {
-		return resourceToken{}, nil, fmt.Errorf("%w: %q", errUndeclaredResource, resource)
-	}
-	if t, ok := s.Resources[resource]; ok && !t.stale(fe.now()) {
-		return t, s.DPoPKey, nil
-	}
-	if fe.cfg.store == nil && rs.cookies.started() {
-		return rs.validToken(resource, errResponseStarted)
-	}
-
-	var tr tokenRequest
-	defer tr.stop()
-	changed, err := fe.updateTokens(ctx, s, rs.st, resource, &tr, func() (bool, error) {
-		if t, ok := s.Resources[resource]; ok && !t.stale(fe.now()) {
-			return false, nil
-		}
-		if s.RefreshToken == "" {
-			return false, errNoRefreshToken
-		}
-		res, err := fe.redeem(tr.ctx, s, resource)
-		if err != nil {
-			return keepRefreshToken(s, res, err)
-		}
-		s.setResourceToken(resource, res.token, res.at)
-		if res.idToken != "" {
-			s.IDToken = res.idToken
-		}
-		return true, nil
-	})
-	if errors.Is(err, errSessionEnded) {
-		fe.logger.InfoContext(ctx, "session ended", "path", rs.request.URL.Path, "error", err)
-		rs.end(tr.ctx)
-		return resourceToken{}, nil, fmt.Errorf("%w: %w", ErrNoSession, err)
-	}
-	if changed {
-		// A failed request can still replace the refresh token, so the session is saved before the error is returned.
-		werr := rs.write(tr.ctx)
-		if errors.Is(werr, ErrNoSession) {
-			// The session was ended by another request, such as a back-channel logout, while this one was running. Do not
-			// revoke the refresh token. A login in the same provider session may have replaced this session.
-			fe.logger.InfoContext(ctx, "session ended during the request", "path", rs.request.URL.Path)
-			rs.end(tr.ctx)
-			return resourceToken{}, nil, ErrNoSession
-		}
-		if err == nil {
-			err = werr
-		}
-	}
-	if err != nil {
-		return rs.validToken(resource, err)
-	}
-	return s.Resources[resource], s.DPoPKey, nil
+	return resourceToken{AccessToken: s.AccessToken, TokenType: s.TokenType, Expiry: s.Expiry}, true
 }
 
-// validToken returns the access token of the resource when it has not expired, as the middleware keeps using the
-// access token of the session while it cannot be renewed. It returns err otherwise.
-func (rs *requestState) validToken(resource string, err error) (resourceToken, []byte, error) {
-	s := rs.session
-	t, ok := s.Resources[resource]
-	if !ok || t.Expiry != 0 && !rs.fe.now().Before(time.Unix(t.Expiry, 0)) {
-		return resourceToken{}, nil, err
+// resourceToken returns the access token of a resource of the route, which the middleware obtained.
+func (rs *requestState) resourceToken(resource string) (resourceToken, bool) {
+	if rs.session == nil || !slices.Contains(rs.resources, resource) {
+		return resourceToken{}, false
 	}
-	rs.fe.logFailed(rs.request, "resource access token", err)
-	return t, s.DPoPKey, nil
-}
-
-// write saves the session after the middleware wrote it, and replaces the session cookie of the response.
-func (rs *requestState) write(ctx context.Context) error {
-	if rs.fe.cfg.store != nil {
-		return rs.fe.writeSession(ctx, make(http.Header), rs.session, rs.st)
-	}
-	c := &rs.cookies
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.sent {
-		return errResponseStarted
-	}
-	h := http.Header{"Set-Cookie": c.lines}
-	removeSessionSetCookies(h)
-	err := rs.fe.writeSession(ctx, h, rs.session, rs.st)
-	c.lines = h["Set-Cookie"]
-	return err
-}
-
-// end deletes the session, which the request no longer has.
-func (rs *requestState) end(ctx context.Context) {
-	// The token request may have used up the time of ctx.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
-	defer cancel()
-	rs.fe.tokens.Forget(rs.session.LogoutCSRFToken)
-	rs.session = nil
-	c := &rs.cookies
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	h := http.Header{"Set-Cookie": c.lines}
-	removeSessionSetCookies(h)
-	_ = rs.fe.deleteSession(ctx, h, rs.st)
-	if !c.sent {
-		c.lines = h["Set-Cookie"]
-	}
+	t, ok := rs.session.Resources[resource]
+	return t, ok
 }
 
 // UserClaims returns the claims about the user of a request authenticated by [Frontend.Authenticate], as returned by
@@ -280,8 +151,6 @@ func UserClaims(ctx context.Context) (map[string]any, bool) {
 	if !ok {
 		return nil, false
 	}
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
 	if rs.session == nil {
 		return nil, false
 	}

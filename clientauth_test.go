@@ -213,10 +213,10 @@ func TestRequestObjectResources(t *testing.T) {
 			}, WithRequestObject(true), WithResources(tc.resources...))
 			e.mountHandler(t, "/api", func(c *fox.Context) {
 				for _, resource := range tc.resources {
-					_, err := ResourceAccessToken(c.Request().Context(), resource)
-					assert.NoError(t, err)
+					_, ok := ResourceAccessToken(c.Request().Context(), resource)
+					assert.True(t, ok)
 				}
-			})
+			}, ForResource(tc.resources...))
 			cookies := e.loggedIn(t)
 
 			objects := e.idp.RequestObjects()

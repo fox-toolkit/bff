@@ -42,7 +42,7 @@ func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 		}
 
 		s, st, err := fe.readSession(r.Context(), r.Cookies())
-		if errors.Is(err, ErrNoSession) {
+		if errors.Is(err, errNoSession) {
 			sessionCookie.clear(w.Header(), st.chunks)
 			http.Redirect(w, r, fe.postLogoutURL(), http.StatusSeeOther)
 			return

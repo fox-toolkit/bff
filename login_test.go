@@ -109,7 +109,7 @@ func TestLogin(t *testing.T) {
 
 	lines := rec.Header().Values("Set-Cookie")
 	require.Len(t, lines, 1)
-	assert.True(t, strings.HasPrefix(lines[0], "__Host-Http-bff-login-"+q.Get("state")+".0="))
+	assert.True(t, strings.HasPrefix(lines[0], "__Host-Http-BFF-Login-"+q.Get("state")+".0="))
 	assert.Contains(t, lines[0], "Max-Age=900; HttpOnly; Secure; SameSite=Lax")
 }
 
@@ -213,7 +213,7 @@ func TestCallbackReplacesSession(t *testing.T) {
 	assert.Len(t, ms.records, 1)
 
 	_, _, err := e.fe.readSession(t.Context(), first)
-	assert.ErrorIs(t, err, ErrNoSession)
+	assert.ErrorIs(t, err, errNoSession)
 	_, _, err = e.fe.readSession(t.Context(), requestCookies(t, second.Header()))
 	assert.NoError(t, err)
 }
@@ -230,7 +230,7 @@ func TestSilentLogin(t *testing.T) {
 	assert.Equal(t, "/home", res.Header().Get("Location"))
 	lines := res.Header().Values("Set-Cookie")
 	require.Len(t, lines, 1)
-	assert.Contains(t, lines[0], "__Host-Http-bff-login-")
+	assert.Contains(t, lines[0], "__Host-Http-BFF-Login-")
 }
 
 func TestLoginInvalid(t *testing.T) {
@@ -376,7 +376,7 @@ func TestCallbackInvalid(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, res.Code)
 			lines := res.Header().Values("Set-Cookie")
 			require.Len(t, lines, 1)
-			assert.Contains(t, lines[0], "__Host-Http-bff-login-")
+			assert.Contains(t, lines[0], "__Host-Http-BFF-Login-")
 		})
 	}
 

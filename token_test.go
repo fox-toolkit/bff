@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,6 +27,7 @@ import (
 	"github.com/fox-toolkit/fox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 func TestAccessToken(t *testing.T) {
@@ -59,7 +59,7 @@ func newUpstream(t *testing.T) *upstream {
 	u := &upstream{requests: make(chan *http.Request, 1)}
 	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u.requests <- r
-		w.Header().Add("Set-Cookie", "__Host-Http-bff.0=evil; Path=/")
+		w.Header().Add("Set-Cookie", "__Host-Http-BFF.0=evil; Path=/")
 		w.Header().Add("Set-Cookie", "api=1")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -153,7 +153,7 @@ func TestTransportUpgrade(t *testing.T) {
 		}
 		defer conn.Close()
 		_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
-			"Set-Cookie: __Host-Http-bff.0=evil; Path=/\r\nSet-Cookie: api=1\r\n\r\n")
+			"Set-Cookie: __Host-Http-BFF.0=evil; Path=/\r\nSet-Cookie: api=1\r\n\r\n")
 		_ = brw.Flush()
 		time.Sleep(100 * time.Millisecond)
 	}))
@@ -219,12 +219,16 @@ const (
 
 func (e *testEnv) mountResourceProxy(t *testing.T, pattern string, u *upstream, resource string, opts ...fox.RouteOption) {
 	t.Helper()
+	e.mountResourceTransport(t, pattern, u, resource, append([]fox.RouteOption{ForResource(resource)}, opts...)...)
+}
+
+func (e *testEnv) mountResourceTransport(t *testing.T, pattern string, u *upstream, resource string, opts ...fox.RouteOption) {
+	t.Helper()
 	target, err := url.Parse(u.URL)
 	require.NoError(t, err)
 	proxy := &httputil.ReverseProxy{
-		Rewrite:      func(pr *httputil.ProxyRequest) { pr.SetURL(target) },
-		Transport:    ResourceTransport(nil, resource),
-		ErrorHandler: ProxyErrorHandler,
+		Rewrite:   func(pr *httputil.ProxyRequest) { pr.SetURL(target) },
+		Transport: ResourceTransport(nil, resource),
 	}
 	_, err = e.router.Add(fox.MethodAny, pattern, fox.WrapH(proxy), append(opts, fox.WithMiddleware(e.fe.Authenticate()))...)
 	require.NoError(t, err)
@@ -252,7 +256,7 @@ func TestResourceTransport(t *testing.T) {
 		e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, opts...)
 		u := newUpstream(t)
 		e.mountResourceProxy(t, "/billing/*{any}", u, billing)
-		e.mountProxy(t, "/api/*{any}", u)
+		e.mountProxy(t, "/api/*{any}", u, ForResource(billing))
 		cookies := e.loggedIn(t)
 
 		rec := e.do(http.MethodGet, "/billing/invoices", cookies, nil)
@@ -286,10 +290,10 @@ func TestResourceTokenRenewal(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second}, WithResources(billing))
 	var tokens []string
 	e.mountHandler(t, "/api", func(c *fox.Context) {
-		token, err := ResourceAccessToken(c.Request().Context(), billing)
-		require.NoError(t, err)
+		token, ok := ResourceAccessToken(c.Request().Context(), billing)
+		require.True(t, ok)
 		tokens = append(tokens, token.AccessToken)
-	})
+	}, ForResource(billing))
 	cookies := e.loggedIn(t)
 
 	rec := e.do(http.MethodGet, "/api", cookies, nil)
@@ -320,15 +324,15 @@ func testResourceConcurrent(t *testing.T, e *testEnv) {
 		var wg sync.WaitGroup
 		for _, resource := range []string{billing, orders} {
 			wg.Go(func() {
-				token, err := ResourceAccessToken(c.Request().Context(), resource)
-				if assert.NoError(t, err) {
+				token, ok := ResourceAccessToken(c.Request().Context(), resource)
+				if assert.True(t, ok) {
 					got, _ := e.idp.AccessTokenResource(token.AccessToken)
 					assert.Equal(t, resource, got)
 				}
 			})
 		}
 		wg.Wait()
-	})
+	}, ForResource(billing, orders))
 	cookies := e.loggedIn(t)
 
 	var wg sync.WaitGroup
@@ -343,17 +347,23 @@ func testResourceConcurrent(t *testing.T, e *testEnv) {
 	assert.Equal(t, 2, e.idp.Refreshes())
 }
 
-func TestResourceTransportErrors(t *testing.T) {
+func TestResourceErrors(t *testing.T) {
 	t.Run("invalid target", func(t *testing.T) {
-		e := newTestEnv(t, oidctest.Options{InvalidTargets: []string{billing}}, WithResources(billing))
+		e := newTestEnv(t, oidctest.Options{InvalidTargets: []string{orders}}, WithResources(billing, orders))
 		u := newUpstream(t)
 		e.mountResourceProxy(t, "/billing/*{any}", u, billing)
+		e.mountResourceProxy(t, "/orders/*{any}", u, orders, ForResource(billing, orders))
 		e.mountProxy(t, "/api/*{any}", u)
 		cookies := e.loggedIn(t)
 
-		rec := e.do(http.MethodGet, "/billing/invoices", cookies, nil)
+		// The access token of billing is saved, although the route fails on orders.
+		rec := e.do(http.MethodGet, "/orders/pending", cookies, nil)
 		assert.Equal(t, http.StatusBadGateway, rec.Code)
-		assert.Empty(t, sessionCookieLines(rec.Header()))
+		assert.Empty(t, u.requests)
+		cookies = requestCookies(t, rec.Header())
+		require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/billing/invoices", cookies, nil).Code)
+		<-u.requests
+		assert.Equal(t, 1, e.idp.Refreshes())
 		require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api/orders", cookies, nil).Code)
 		assert.NotEmpty(t, bearer(t, <-u.requests))
 	})
@@ -371,9 +381,10 @@ func TestResourceTransportErrors(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				e := newTestEnv(t, oidctest.Options{}, append(tc.opts, WithResources(billing))...)
+				e := newTestEnv(t, oidctest.Options{}, append(tc.opts, WithResources(billing, orders))...)
 				u := newUpstream(t)
-				e.mountResourceProxy(t, "/billing/*{any}", u, billing)
+				calls := e.countRefreshes()
+				e.mountResourceProxy(t, "/billing/*{any}", u, billing, ForResource(billing, orders))
 				e.mountResourceProxy(t, "/public/*{any}", u, billing, AllowAnonymous())
 				cookies := e.loggedIn(t)
 				s, _, err := e.fe.readSession(t.Context(), cookies)
@@ -383,6 +394,7 @@ func TestResourceTransportErrors(t *testing.T) {
 				rec := e.do(http.MethodGet, "/billing/invoices", cookies, nil)
 				assert.Equal(t, tc.code, rec.Code)
 				assert.Empty(t, u.requests)
+				assert.Equal(t, int32(1), calls.Load())
 				lines := sessionCookieLines(rec.Header())
 				require.Len(t, lines, 1)
 				assert.Contains(t, lines[0], "Max-Age=0")
@@ -423,53 +435,88 @@ func TestResourceTransportErrors(t *testing.T) {
 		assert.Empty(t, u.requests)
 	})
 
-	t.Run("undeclared resource and anonymous", func(t *testing.T) {
+	t.Run("no refresh token", func(t *testing.T) {
 		e := newTestEnv(t, oidctest.Options{}, WithResources(billing))
 		u := newUpstream(t)
+		e.mountResourceProxy(t, "/billing/*{any}", u, billing)
+		s := newSession(time.Now())
+		s.Subject, s.AccessToken, s.Expiry = "alice", "access-token", time.Now().Add(time.Hour).Unix()
+		h := make(http.Header)
+		require.NoError(t, e.fe.writeSession(t.Context(), h, s, sessionState{}))
+
+		assert.Equal(t, http.StatusBadGateway, e.do(http.MethodGet, "/billing/invoices", requestCookies(t, h), nil).Code)
+		assert.Empty(t, u.requests)
+	})
+
+	t.Run("undeclared resource", func(t *testing.T) {
+		var logs bytes.Buffer
+		e := newTestEnv(t, oidctest.Options{}, WithResources(billing), WithLogHandler(slog.NewTextHandler(&logs, nil)))
+		u := newUpstream(t)
 		e.mountResourceProxy(t, "/orders/*{any}", u, orders)
+		e.mountResourceProxy(t, "/public/*{any}", u, orders, AllowAnonymous())
+
+		assert.Equal(t, http.StatusInternalServerError, e.do(http.MethodGet, "/orders/pending", e.loggedIn(t), nil).Code)
+		assert.Equal(t, http.StatusInternalServerError, e.do(http.MethodGet, "/public/catalog", nil, nil).Code)
+		assert.Empty(t, u.requests)
+		assert.Contains(t, logs.String(), errUndeclaredResource.Error())
+	})
+
+	t.Run("resource not on the route and anonymous", func(t *testing.T) {
+		var logs bytes.Buffer
+		e := newTestEnv(t, oidctest.Options{}, WithResources(billing, orders), WithLogHandler(slog.NewTextHandler(&logs, nil)))
+		u := newUpstream(t)
+		e.mountResourceTransport(t, "/orders/*{any}", u, orders, ForResource(billing))
 		e.mountResourceProxy(t, "/public/*{any}", u, billing, AllowAnonymous())
 		cookies := e.loggedIn(t)
 
 		require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/orders/pending", cookies, nil).Code)
 		assert.Empty(t, (<-u.requests).Header.Get("Authorization"))
+		assert.Contains(t, logs.String(), errRouteResource.Error())
 		require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/public/catalog", nil, nil).Code)
 		assert.Empty(t, (<-u.requests).Header.Get("Authorization"))
-		assert.Zero(t, e.idp.Refreshes())
+		assert.Equal(t, 1, e.idp.Refreshes())
 	})
 }
 
-func TestResourceAccessTokenErrors(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{}, WithResources(billing))
-	errs := make(chan error, 1)
-	e.mountHandler(t, "/undeclared", func(c *fox.Context) {
-		_, err := ResourceAccessToken(c.Request().Context(), orders)
-		errs <- err
-	})
-	e.mountHandler(t, "/started", func(c *fox.Context) {
-		c.Writer().WriteHeader(http.StatusOK)
-		_, err := ResourceAccessToken(c.Request().Context(), billing)
-		errs <- err
-	})
-	e.mountHandler(t, "/anonymous", func(c *fox.Context) {
-		_, err := ResourceAccessToken(c.Request().Context(), billing)
-		errs <- err
-	}, AllowAnonymous())
+func TestResourceAccessTokenNotFound(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{}, WithResources(billing, orders))
+	found := make(chan bool, 1)
+	h := func(c *fox.Context) {
+		_, ok := ResourceAccessToken(c.Request().Context(), orders)
+		found <- ok
+	}
+	e.mountHandler(t, "/billing", h, ForResource(billing))
+	e.mountHandler(t, "/anonymous", h, ForResource(orders), AllowAnonymous())
+	e.mountHandler(t, "/orders", h, ForResource(orders))
 	cookies := e.loggedIn(t)
 
-	_, err := ResourceAccessToken(t.Context(), billing)
-	require.ErrorIs(t, err, ErrNoSession)
-	e.do(http.MethodGet, "/undeclared", cookies, nil)
-	require.ErrorIs(t, <-errs, errUndeclaredResource)
-	e.do(http.MethodGet, "/started", cookies, nil)
-	require.ErrorIs(t, <-errs, errResponseStarted)
+	_, ok := ResourceAccessToken(t.Context(), orders)
+	assert.False(t, ok)
+	e.do(http.MethodGet, "/billing", cookies, nil)
+	assert.False(t, <-found)
 	e.do(http.MethodGet, "/anonymous", nil, nil)
-	require.ErrorIs(t, <-errs, ErrNoSession)
+	assert.False(t, <-found)
+	e.do(http.MethodGet, "/orders", cookies, nil)
+	assert.True(t, <-found)
 
-	s := testSession()
-	s.RefreshToken = ""
-	rs := &requestState{fe: e.fe, session: s, request: httptest.NewRequest(http.MethodGet, "/", nil)}
-	_, err = ResourceAccessToken(context.WithValue(t.Context(), sessionKey{}, rs), billing)
-	assert.ErrorIs(t, err, errNoRefreshToken)
+	rs := &requestState{fe: e.fe, session: testSession(), resources: []string{orders}}
+	_, ok = ResourceAccessToken(context.WithValue(t.Context(), sessionKey{}, rs), "")
+	assert.False(t, ok)
+}
+
+func TestForResourceLastApplies(t *testing.T) {
+	e := newTestEnv(t, oidctest.Options{}, WithResources(billing, orders))
+	found := make(chan bool, 2)
+	e.mountHandler(t, "/api", func(c *fox.Context) {
+		_, ok := ResourceAccessToken(c.Request().Context(), billing)
+		found <- ok
+		_, ok = ResourceAccessToken(c.Request().Context(), orders)
+		found <- ok
+	}, ForResource(billing), ForResource(orders))
+
+	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", e.loggedIn(t), nil).Code)
+	assert.False(t, <-found)
+	assert.True(t, <-found)
 }
 
 func TestResourceTransportDPoP(t *testing.T) {
@@ -489,15 +536,16 @@ func TestResourceTransportDPoP(t *testing.T) {
 }
 
 func TestResourceCookieWrittenOnce(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 24 * time.Hour}, WithResources(billing))
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 10 * time.Minute}, WithResources(billing, orders))
 	u := newUpstream(t)
-	e.mountResourceProxy(t, "/billing/*{any}", u, billing)
+	e.mountResourceProxy(t, "/billing/*{any}", u, billing, ForResource(billing, orders))
 	cookies := e.loggedIn(t)
 	e.skipAhead(DefaultIdleTimeout/2 + time.Second)
 
 	rec := e.do(http.MethodGet, "/billing/invoices", cookies, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	<-u.requests
+	assert.Equal(t, 3, e.idp.Refreshes())
 	names := make(map[string]bool)
 	for _, c := range requestCookies(t, rec.Header()) {
 		assert.False(t, names[c.Name], c.Name)
@@ -506,6 +554,7 @@ func TestResourceCookieWrittenOnce(t *testing.T) {
 	s, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
 	require.NoError(t, err)
 	assert.Contains(t, s.Resources, billing)
+	assert.Contains(t, s.Resources, orders)
 }
 
 // flakyStore fails the loads that follow the first failAfter ones.
@@ -520,46 +569,6 @@ func (s *flakyStore) Load(ctx context.Context, id string) (store.Record, error) 
 		return store.Record{}, errors.New("store unavailable")
 	}
 	return s.mapStore.Load(ctx, id)
-}
-
-func TestUnauthorized(t *testing.T) {
-	e := newTestEnv(t, oidctest.Options{}, WithResources(billing), WithUnauthorizedHandler(func(c *fox.Context) {
-		c.Writer().WriteHeader(http.StatusTeapot)
-	}))
-	e.mountHandler(t, "/export", func(c *fox.Context) {
-		if _, err := ResourceAccessToken(c.Request().Context(), billing); errors.Is(err, ErrNoSession) {
-			e.fe.Unauthorized(c)
-		}
-	})
-	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
-	require.NoError(t, err)
-	require.NoError(t, e.fe.revoke(t.Context(), s.RefreshToken))
-
-	assert.Equal(t, http.StatusTeapot, e.do(http.MethodGet, "/export", cookies, nil).Code)
-}
-
-func TestProxyErrorHandler(t *testing.T) {
-	var logs bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(prev) })
-
-	rec := httptest.NewRecorder()
-	ProxyErrorHandler(rec, httptest.NewRequest(http.MethodGet, "/", nil), errors.New("connection refused"))
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
-	assert.Contains(t, logs.String(), "connection refused")
-
-	e := newTestEnv(t, oidctest.Options{})
-	target, err := url.Parse("http://127.0.0.1:1")
-	require.NoError(t, err)
-	proxy := &httputil.ReverseProxy{
-		Rewrite:      func(pr *httputil.ProxyRequest) { pr.SetURL(target) },
-		Transport:    Transport(nil),
-		ErrorHandler: ProxyErrorHandler,
-	}
-	e.mountHandler(t, "/api/*{any}", fox.WrapH(proxy))
-	assert.Equal(t, http.StatusBadGateway, e.do(http.MethodGet, "/api/orders", e.loggedIn(t), nil).Code)
 }
 
 // gatingStore blocks its first Update until release is closed.
@@ -580,20 +589,20 @@ func (s *gatingStore) Update(ctx context.Context, id string, r store.Record) err
 	return s.mapStore.Update(ctx, id, r)
 }
 
-func (e *testEnv) mountResourceToken(t *testing.T, pattern, resource string, errs chan error) {
+func (e *testEnv) mountResourceToken(t *testing.T, pattern, resource string, found chan bool) {
 	t.Helper()
 	e.mountHandler(t, pattern, func(c *fox.Context) {
-		_, err := ResourceAccessToken(c.Request().Context(), resource)
-		errs <- err
-	})
+		_, ok := ResourceAccessToken(c.Request().Context(), resource)
+		found <- ok
+	}, ForResource(resource))
 }
 
 func TestResourceStatefulLostUpdate(t *testing.T) {
 	gs := &gatingStore{mapStore: &mapStore{records: make(map[string]store.Record)}, entered: make(chan struct{}), release: make(chan struct{})}
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing, orders), WithStore(gs))
-	errs := make(chan error, 4)
-	e.mountResourceToken(t, "/r1", billing, errs)
-	e.mountResourceToken(t, "/r2", orders, errs)
+	found := make(chan bool, 4)
+	e.mountResourceToken(t, "/r1", billing, found)
+	e.mountResourceToken(t, "/r2", orders, found)
 	cookies := e.loggedIn(t)
 
 	done := make(chan struct{})
@@ -602,8 +611,8 @@ func TestResourceStatefulLostUpdate(t *testing.T) {
 	e.do(http.MethodGet, "/r2", cookies, nil)
 	close(gs.release)
 	<-done
-	require.NoError(t, <-errs)
-	require.NoError(t, <-errs)
+	require.True(t, <-found)
+	require.True(t, <-found)
 
 	_, st, err := e.fe.readSession(t.Context(), cookies)
 	require.NoError(t, err)
@@ -614,7 +623,62 @@ func TestResourceStatefulLostUpdate(t *testing.T) {
 
 	e.skipAhead(2 * time.Minute)
 	e.do(http.MethodGet, "/r2", cookies, nil)
-	assert.NoError(t, <-errs)
+	assert.True(t, <-found)
+}
+
+// onRefresh calls fn before it sends a refresh token grant.
+type onRefresh struct {
+	base http.RoundTripper
+	fn   func(form url.Values)
+}
+
+func (o *onRefresh) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if form, _ := url.ParseQuery(string(body)); form.Get("grant_type") == "refresh_token" {
+		o.fn(form)
+	}
+	return o.base.RoundTrip(r)
+}
+
+func TestResourceNewerSessionKeepsTokens(t *testing.T) {
+	ms := &mapStore{records: make(map[string]store.Record)}
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithResources(billing, orders), WithStore(ms))
+	found := make(chan bool, 2)
+	e.mountHandler(t, "/dashboard", func(c *fox.Context) {
+		for _, resource := range []string{billing, orders} {
+			_, ok := ResourceAccessToken(c.Request().Context(), resource)
+			found <- ok
+		}
+	}, ForResource(billing, orders))
+	cookies := e.loggedIn(t)
+	_, st, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+
+	var once sync.Once
+	client := *e.fe.provider.client
+	client.Transport = &onRefresh{base: client.Transport, fn: func(form url.Values) {
+		if form.Get("resource") != billing {
+			return
+		}
+		once.Do(func() {
+			other, err := e.fe.loadSession(context.Background(), st.id)
+			require.NoError(t, err)
+			expiry := time.Now().Add(time.Hour)
+			other.setToken(&oauth2.Token{AccessToken: "other-default", TokenType: "Bearer", Expiry: expiry}, time.Now())
+			other.setResourceToken(orders, &oauth2.Token{AccessToken: "other-orders", TokenType: "Bearer", Expiry: expiry}, time.Now())
+			require.NoError(t, e.fe.writeSession(context.Background(), make(http.Header), other, st))
+		})
+	}}
+	e.fe.provider.client = &client
+
+	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/dashboard", cookies, nil).Code)
+	assert.True(t, <-found)
+	assert.True(t, <-found)
+	stored, err := e.fe.loadSession(t.Context(), st.id)
+	require.NoError(t, err)
+	assert.Contains(t, stored.Resources, billing)
+	assert.Equal(t, "other-orders", stored.Resources[orders].AccessToken)
 }
 
 // ctxStore fails its writes once the context is canceled, like a store backed by a network client.
@@ -666,6 +730,29 @@ func (e *testEnv) cancelOnRefresh(t *testing.T) context.Context {
 	return ctx
 }
 
+// countRefresh counts the refresh token grants sent to the provider.
+type countRefresh struct {
+	base  http.RoundTripper
+	calls atomic.Int32
+}
+
+func (c *countRefresh) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if bytes.Contains(body, []byte("grant_type=refresh_token")) {
+		c.calls.Add(1)
+	}
+	return c.base.RoundTrip(r)
+}
+
+func (e *testEnv) countRefreshes() *atomic.Int32 {
+	client := *e.fe.provider.client
+	c := &countRefresh{base: client.Transport}
+	client.Transport = c
+	e.fe.provider.client = &client
+	return &c.calls
+}
+
 func (e *testEnv) doContext(ctx context.Context, target string, cookies []*http.Cookie) {
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, appOrigin+target, nil)
 	for _, c := range cookies {
@@ -676,19 +763,19 @@ func (e *testEnv) doContext(ctx context.Context, target string, cookies []*http.
 
 func TestResourceCanceledRequest(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing), WithStore(ctxStore{&mapStore{records: make(map[string]store.Record)}}))
-	errs := make(chan error, 2)
-	e.mountResourceToken(t, "/r1", billing, errs)
+	found := make(chan bool, 2)
+	e.mountResourceToken(t, "/r1", billing, found)
 	cookies := e.loggedIn(t)
 
 	e.doContext(e.cancelOnRefresh(t), "/r1", cookies)
-	require.NoError(t, <-errs)
+	require.True(t, <-found)
 
 	e.skipAhead(2 * time.Minute)
 	e.do(http.MethodGet, "/r1", cookies, nil)
-	assert.NoError(t, <-errs)
+	assert.True(t, <-found)
 }
 
-func TestResourceEndCanceledContext(t *testing.T) {
+func TestDeleteEndedSessionCanceledContext(t *testing.T) {
 	ms := &mapStore{records: make(map[string]store.Record)}
 	e := newTestEnv(t, oidctest.Options{}, WithStore(ctxStore{ms}))
 	cookies := e.loggedIn(t)
@@ -697,29 +784,28 @@ func TestResourceEndCanceledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	rs := &requestState{fe: e.fe, session: s, st: st}
-	rs.end(ctx)
+	require.NoError(t, e.fe.deleteEndedSession(ctx, httptest.NewRequest(http.MethodGet, "/", nil), make(http.Header), s, st, errSessionEnded))
 	assert.Empty(t, ms.records)
 }
 
 func TestResourceBearerUnderDPoP(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing, orders), WithDPoP(true))
-	errs := make(chan error, 2)
-	e.mountResourceToken(t, "/r1", billing, errs)
-	e.mountResourceToken(t, "/r2", orders, errs)
+	found := make(chan bool, 2)
+	e.mountResourceToken(t, "/r1", billing, found)
+	e.mountResourceToken(t, "/r2", orders, found)
 	cookies := e.loggedIn(t)
 
 	e.idp.Update(func(o *oidctest.Options) { o.IgnoreDPoP = true })
 	rec := e.do(http.MethodGet, "/r1", cookies, nil)
-	require.ErrorIs(t, <-errs, errNotDPoPBound)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
 	cookies = requestCookies(t, rec.Header())
 
 	s, _, err := e.fe.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 	e.fe.tokens.Forget(s.LogoutCSRFToken)
 	e.idp.Update(func(o *oidctest.Options) { o.IgnoreDPoP = false })
-	e.do(http.MethodGet, "/r2", cookies, nil)
-	assert.NoError(t, <-errs)
+	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/r2", cookies, nil).Code)
+	assert.True(t, <-found)
 }
 
 // failRefresh answers 503 to the refresh token grants once enabled.
@@ -770,6 +856,41 @@ func TestResourceStaleTokenProviderDown(t *testing.T) {
 
 	e.skipAhead(10 * time.Minute)
 	assert.Equal(t, http.StatusBadGateway, e.do(http.MethodGet, "/billing/invoices", cookies, nil).Code)
+	assert.Empty(t, u.requests)
+}
+
+func TestTokenExpiredDuringRenewal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resource string
+		loginTTL time.Duration
+	}{
+		{name: "session", loginTTL: 2 * time.Minute},
+		{name: "resource", resource: billing, loginTTL: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, oidctest.Options{AccessTokenTTL: tc.loginTTL}, WithResources(billing))
+			e.mountHandler(t, "/r", func(*fox.Context) {}, ForResource(billing))
+			cookies := e.loggedIn(t)
+			e.idp.Update(func(o *oidctest.Options) { o.AccessTokenTTL = 2 * time.Minute })
+			rec := e.do(http.MethodGet, "/r", cookies, nil)
+			require.Equal(t, http.StatusOK, rec.Code)
+			cookies = requestCookies(t, rec.Header())
+
+			client := *e.fe.provider.client
+			fr := &failRefresh{base: client.Transport}
+			fr.fail.Store(true)
+			client.Transport = &onRefresh{base: fr, fn: func(form url.Values) {
+				if form.Get("resource") == tc.resource {
+					e.skipAhead(2*time.Minute + 5*time.Second)
+				}
+			}}
+			e.fe.provider.client = &client
+			e.skipAhead(110 * time.Second)
+
+			assert.Equal(t, http.StatusBadGateway, e.do(http.MethodGet, "/r", cookies, nil).Code)
+		})
+	}
 }
 
 // deadlineRefresh records the time left to the refresh token grants.
@@ -789,8 +910,8 @@ func (d *deadlineRefresh) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func TestResourceTokenRequestStartsWithLock(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithResources(billing))
-	errs := make(chan error, 1)
-	e.mountResourceToken(t, "/r1", billing, errs)
+	found := make(chan bool, 1)
+	e.mountResourceToken(t, "/r1", billing, found)
 	client := *e.fe.provider.client
 	dr := &deadlineRefresh{base: client.Transport, left: make(chan time.Duration, 1)}
 	client.Transport = dr
@@ -814,8 +935,62 @@ func TestResourceTokenRequestStartsWithLock(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	close(release)
 	<-done
-	require.NoError(t, <-errs)
+	require.True(t, <-found)
 	assert.Greater(t, <-dr.left, refreshTimeout-time.Second)
+}
+
+// deadlineStore records the time left to its updates.
+type deadlineStore struct {
+	*mapStore
+	left chan time.Duration
+}
+
+func (s deadlineStore) Update(ctx context.Context, id string, r store.Record) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.left <- time.Until(deadline)
+	}
+	return s.mapStore.Update(ctx, id, r)
+}
+
+func TestRenewedSessionWriteStartsAfterLock(t *testing.T) {
+	ds := deadlineStore{mapStore: &mapStore{records: make(map[string]store.Record)}, left: make(chan time.Duration, 1)}
+	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, RotateRefreshTokens: true}, WithResources(billing), WithStore(ds))
+	e.mountHandler(t, "/r", func(*fox.Context) {}, ForResource(billing))
+	cookies := e.loggedIn(t)
+	s, _, err := e.fe.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+	e.skipAhead(20 * time.Second)
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	client := *e.fe.provider.client
+	client.Transport = &onRefresh{base: client.Transport, fn: func(form url.Values) {
+		if form.Get("resource") != "" {
+			return
+		}
+		once.Do(func() {
+			go func() {
+				_ = e.fe.tokens.Do(context.Background(), s.LogoutCSRFToken, func(*session) (*session, error) {
+					close(held)
+					<-release
+					return nil, nil
+				})
+			}()
+			e.waitQueued(t, s.LogoutCSRFToken, 2)
+		})
+	}}
+	e.fe.provider.client = &client
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { e.doContext(ctx, "/r", cookies); close(done) }()
+	<-held
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+	close(release)
+	assert.Greater(t, <-ds.left, refreshTimeout-time.Second)
 }
 
 func TestTransportAfterHandler(t *testing.T) {
@@ -872,13 +1047,13 @@ func TestTransportAfterHandlerConcurrent(t *testing.T) {
 func TestResourceTokenSessionEndedDuringRequest(t *testing.T) {
 	ds := &deletingStore{mapStore: &mapStore{records: make(map[string]store.Record)}}
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing), WithStore(ds))
-	errs := make(chan error, 1)
-	e.mountResourceToken(t, "/r", billing, errs)
+	found := make(chan bool, 1)
+	e.mountResourceToken(t, "/r", billing, found)
 	cookies := e.loggedIn(t)
 
 	ds.deleteOnUpdate = true
-	e.do(http.MethodGet, "/r", cookies, nil)
-	require.ErrorIs(t, <-errs, ErrNoSession)
+	assert.Equal(t, http.StatusUnauthorized, e.do(http.MethodGet, "/r", cookies, nil).Code)
+	assert.Empty(t, found)
 	assert.Empty(t, ds.records)
 	assert.Empty(t, e.idp.Revoked())
 }

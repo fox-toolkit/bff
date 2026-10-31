@@ -202,32 +202,32 @@ func TestLogoutStoreError(t *testing.T) {
 func TestLogoutForgetsTokens(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing))
 	e.mountLogout(t)
-	errs := make(chan error, 2)
-	e.mountResourceToken(t, "/r1", billing, errs)
+	found := make(chan bool, 2)
+	e.mountResourceToken(t, "/r1", billing, found)
 	old := e.loggedIn(t)
 
 	rec := e.do(http.MethodGet, "/r1", old, nil)
-	require.NoError(t, <-errs)
+	require.True(t, <-found)
 	latest := requestCookies(t, rec.Header())
 	s, _, err := e.fe.readSession(t.Context(), latest)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusSeeOther, e.do(http.MethodGet, "/bff/logout?csrf_token="+s.LogoutCSRFToken, latest, nil).Code)
 	refreshes := e.idp.Refreshes()
 
-	e.do(http.MethodGet, "/r1", old, nil)
-	assert.ErrorIs(t, <-errs, ErrNoSession)
+	assert.Equal(t, http.StatusUnauthorized, e.do(http.MethodGet, "/r1", old, nil).Code)
+	assert.Empty(t, found)
 	assert.Equal(t, refreshes, e.idp.Refreshes())
 }
 
 func TestLogoutStaleCookie(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing))
 	e.mountLogout(t)
-	errs := make(chan error, 1)
-	e.mountResourceToken(t, "/r1", billing, errs)
+	found := make(chan bool, 1)
+	e.mountResourceToken(t, "/r1", billing, found)
 	old := e.loggedIn(t)
 
 	rec := e.do(http.MethodGet, "/r1", old, nil)
-	require.NoError(t, <-errs)
+	require.True(t, <-found)
 	latest, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
 	require.NoError(t, err)
 
@@ -266,8 +266,8 @@ func (e *testEnv) waitQueued(t *testing.T, id string, n int) {
 func TestLogoutDuringRefresh(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour, RotateRefreshTokens: true}, WithResources(billing))
 	e.mountLogout(t)
-	errs := make(chan error, 1)
-	e.mountResourceToken(t, "/r1", billing, errs)
+	found := make(chan bool, 1)
+	e.mountResourceToken(t, "/r1", billing, found)
 	cookies := e.loggedIn(t)
 	s, _, err := e.fe.readSession(t.Context(), cookies)
 	require.NoError(t, err)
@@ -297,7 +297,7 @@ func TestLogoutDuringRefresh(t *testing.T) {
 	release()
 
 	rec := <-refreshed
-	require.NoError(t, <-errs)
+	require.True(t, <-found)
 	latest, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusSeeOther, (<-logout).Code)
