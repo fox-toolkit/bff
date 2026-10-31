@@ -70,7 +70,7 @@ func (e *testEnv) skipAhead(d time.Duration) {
 func sessionCookieLines(h http.Header) []string {
 	var lines []string
 	for _, line := range h.Values("Set-Cookie") {
-		if strings.HasPrefix(line, "__Host-Http-bff.") {
+		if strings.HasPrefix(line, "__Host-Http-BFF.") {
 			lines = append(lines, line)
 		}
 	}
@@ -137,9 +137,9 @@ func TestMiddlewareCSRF(t *testing.T) {
 func TestMiddlewareInvalidCookie(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{})
 	e.mount(t, "/api")
-	rec := e.do(http.MethodGet, "/api", []*http.Cookie{{Name: "__Host-Http-bff.0", Value: "garbage"}}, nil)
+	rec := e.do(http.MethodGet, "/api", []*http.Cookie{{Name: "__Host-Http-BFF.0", Value: "garbage"}}, nil)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Equal(t, []string{"__Host-Http-bff.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"}, rec.Header().Values("Set-Cookie"))
+	assert.Equal(t, []string{"__Host-Http-BFF.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"}, rec.Header().Values("Set-Cookie"))
 }
 
 func TestMiddlewareExpiry(t *testing.T) {
@@ -276,8 +276,8 @@ func TestMiddlewareProviderDown(t *testing.T) {
 func TestMiddlewareResponseCookies(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second})
 	_, err := e.router.Add(fox.MethodGet, "/api", func(c *fox.Context) {
-		c.Writer().Header().Add("Set-Cookie", "__Host-Http-bff.0=evil; Path=/")
-		c.Writer().Header().Add("Set-Cookie", "__Host-Http-bff-login-x.0=evil; Path=/")
+		c.Writer().Header().Add("Set-Cookie", "__Host-Http-BFF.0=evil; Path=/")
+		c.Writer().Header().Add("Set-Cookie", "__Host-Http-BFF-Login-x.0=evil; Path=/")
 		c.Writer().Header().Add("Set-Cookie", "other=1")
 		_, _ = c.Writer().WriteString("ok")
 	}, fox.WithMiddleware(e.fe.Authenticate()))
@@ -290,16 +290,16 @@ func TestMiddlewareResponseCookies(t *testing.T) {
 	lines := rec.Header().Values("Set-Cookie")
 	require.Len(t, lines, 2)
 	assert.Equal(t, "other=1", lines[0])
-	assert.True(t, strings.HasPrefix(lines[1], "__Host-Http-bff.0="))
+	assert.True(t, strings.HasPrefix(lines[1], "__Host-Http-BFF.0="))
 	assert.NotContains(t, lines[1], "evil")
 }
 
 func TestRemoveOwnCookies(t *testing.T) {
-	h := http.Header{"Cookie": {"a=1; __Host-Http-bff.0=x; b=2", "__Host-Http-bff-login-s.0=y", " c=3 "}}
+	h := http.Header{"Cookie": {"a=1; __Host-Http-BFF.0=x; b=2", "__Host-Http-BFF-Login-s.0=y", " c=3 "}}
 	removeOwnCookies(h)
 	assert.Equal(t, []string{"a=1; b=2", "c=3"}, h["Cookie"])
 
-	h = http.Header{"Cookie": {"__Host-Http-bff.0=x"}}
+	h = http.Header{"Cookie": {"__Host-Http-BFF.0=x"}}
 	removeOwnCookies(h)
 	assert.NotContains(t, h, "Cookie")
 }

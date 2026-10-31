@@ -54,7 +54,7 @@ func TestSessionStateless(t *testing.T) {
 
 	h = make(http.Header)
 	require.NoError(t, fe.deleteSession(t.Context(), h, st))
-	assert.Equal(t, []string{"__Host-Http-bff.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"}, h.Values("Set-Cookie"))
+	assert.Equal(t, []string{"__Host-Http-BFF.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"}, h.Values("Set-Cookie"))
 }
 
 type mapStore struct {

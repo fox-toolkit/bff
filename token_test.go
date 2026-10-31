@@ -59,7 +59,7 @@ func newUpstream(t *testing.T) *upstream {
 	u := &upstream{requests: make(chan *http.Request, 1)}
 	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u.requests <- r
-		w.Header().Add("Set-Cookie", "__Host-Http-bff.0=evil; Path=/")
+		w.Header().Add("Set-Cookie", "__Host-Http-BFF.0=evil; Path=/")
 		w.Header().Add("Set-Cookie", "api=1")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -153,7 +153,7 @@ func TestTransportUpgrade(t *testing.T) {
 		}
 		defer conn.Close()
 		_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
-			"Set-Cookie: __Host-Http-bff.0=evil; Path=/\r\nSet-Cookie: api=1\r\n\r\n")
+			"Set-Cookie: __Host-Http-BFF.0=evil; Path=/\r\nSet-Cookie: api=1\r\n\r\n")
 		_ = brw.Flush()
 		time.Sleep(100 * time.Millisecond)
 	}))

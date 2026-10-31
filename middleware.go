@@ -281,7 +281,7 @@ func (fe *Frontend) refreshToken(ctx context.Context, s *session, st sessionStat
 }
 
 func isOwnCookie(name string) bool {
-	return strings.HasPrefix(strings.TrimSpace(name), cookiePrefix+"bff")
+	return strings.HasPrefix(strings.TrimSpace(name), cookiePrefix+"BFF")
 }
 
 func removeOwnCookies(h http.Header) {

@@ -35,12 +35,12 @@ type cookieSpec struct {
 }
 
 // sessionCookie is only sent on same-site requests.
-var sessionCookie = cookieSpec{name: cookiePrefix + "bff", purpose: "session", sameSite: http.SameSiteStrictMode}
+var sessionCookie = cookieSpec{name: cookiePrefix + "BFF", purpose: "session", sameSite: http.SameSiteStrictMode}
 
 // loginCookie contains the state of one login flow. It must be sent on the cross-site navigation from the provider to
 // the callback, hence the lax mode.
 func loginCookie(id string) cookieSpec {
-	return cookieSpec{name: cookiePrefix + "bff-login-" + id, purpose: "login", sameSite: http.SameSiteLaxMode}
+	return cookieSpec{name: cookiePrefix + "BFF-Login-" + id, purpose: "login", sameSite: http.SameSiteLaxMode}
 }
 
 func (s cookieSpec) associatedData() []byte {
