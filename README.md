@@ -63,9 +63,8 @@ func main() {
 	
 	api, _ := url.Parse("https://api.example.com")
 	proxy := &httputil.ReverseProxy{
-		Rewrite:      func(r *httputil.ProxyRequest) { r.SetURL(api) },
-		Transport:    bff.Transport(nil),
-		ErrorHandler: bff.ProxyErrorHandler,
+		Rewrite:   func(r *httputil.ProxyRequest) { r.SetURL(api) },
+		Transport: bff.Transport(nil),
 	}
 
 	f := fox.MustRouter()
