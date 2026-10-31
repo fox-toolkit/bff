@@ -32,7 +32,8 @@ type userResponse struct {
 //	}
 //
 // The logoutCsrfToken member is the CSRF token expected by [Frontend.LogoutHandler], and expiresIn is the number of
-// seconds before the session ends. The application must call it from JavaScript.
+// seconds before the session ends. The application calls it from JavaScript, with the header of [WithCSRFHeader] when
+// this option is set. A request without a session gets the response of the unauthorized handler.
 func (fe *Frontend) UserHandler() fox.HandlerFunc {
 	return func(c *fox.Context) {
 		r := c.Request()

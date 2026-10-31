@@ -138,7 +138,7 @@ type providerConfig struct {
 }
 
 // WithHTTPClient sets the HTTP client used for the requests to the provider. The default client uses
-// [http.DefaultTransport] and stops a request after 10 seconds.
+// [http.DefaultTransport] with a timeout of 10 seconds.
 func WithHTTPClient(client *http.Client) ProviderOption {
 	return providerOptionFunc(func(c *providerConfig) error {
 		if client == nil {

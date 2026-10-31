@@ -25,8 +25,9 @@ const (
 	maxLogoutBody = 4096
 )
 
-// LogoutHandler returns a handler that ends the session and redirects to the end session endpoint of the provider, as
-// defined by OpenID Connect RP-Initiated Logout. It requires the csrf_token query parameter or form field.
+// LogoutHandler returns a handler that ends the session, revokes its refresh token and redirects to the end session
+// endpoint of the provider, as defined by OpenID Connect RP-Initiated Logout. The browser navigates to it with the
+// csrf_token query parameter or form field, set to the logoutCsrfToken returned by [Frontend.UserHandler].
 func (fe *Frontend) LogoutHandler() fox.HandlerFunc {
 	return func(c *fox.Context) {
 		r := c.Request()

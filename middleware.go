@@ -26,8 +26,9 @@ type (
 	sessionKey   struct{}
 )
 
-// AllowAnonymous returns a route option that lets the requests without a session through [Frontend.Authenticate]. These
-// requests have no access token.
+// AllowAnonymous returns a [fox.RouteOption] that lets [Frontend.Authenticate] pass the requests without a session to
+// the next handler. For these requests, [AccessToken] reports false, [ResourceAccessToken] returns [ErrNoSession], and
+// [Transport] and [ResourceTransport] do not add an access token.
 func AllowAnonymous() fox.RouteOption {
 	return fox.WithAnnotation(anonymousKey{}, true)
 }
@@ -61,11 +62,14 @@ func (c *pendingCookies) started() bool {
 	return c.sent
 }
 
-// Authenticate returns a middleware that authenticates the requests with the session cookie. It rejects cross-origin
-// requests with an unsafe method, except from the trusted origins (see [WithTrustedOrigins]), refreshes the access
-// token before it expires, and makes it available with [AccessToken]. Requests without a valid session are handled by
-// the unauthorized handler, unless the route has [AllowAnonymous]. The session cookies are removed from the request
-// passed to the next handler and from its response.
+// Authenticate returns a middleware that authenticates the requests with the session cookie and refreshes the access
+// token before it expires. The next handler obtains the token with [AccessToken]. A request without a valid session is
+// handled by the unauthorized handler (see [WithUnauthorizedHandler]), unless the route has [AllowAnonymous].
+//
+// To prevent cross-site request forgery, the middleware responds with 403 Forbidden to a cross-origin request with an
+// unsafe method, except from the trusted origins (see [WithTrustedOrigins]), and to a request without the header
+// configured with [WithCSRFHeader]. Additionally, it removes the session cookies from the request passed to the next
+// handler and from its response, which prevents an API behind a reverse proxy from receiving them.
 func (fe *Frontend) Authenticate() fox.MiddlewareFunc {
 	return func(next fox.HandlerFunc) fox.HandlerFunc {
 		return func(c *fox.Context) {
@@ -109,8 +113,8 @@ func (fe *Frontend) serve(c *fox.Context, next fox.HandlerFunc) {
 	c.SetRequest(r)
 }
 
-// Unauthorized responds with the unauthorized handler of the frontend, such as in a handler when [ResourceAccessToken]
-// returns [ErrNoSession].
+// Unauthorized calls the unauthorized handler of the frontend (see [WithUnauthorizedHandler]). A handler typically
+// calls it when [ResourceAccessToken] returns [ErrNoSession].
 func (fe *Frontend) Unauthorized(c *fox.Context) {
 	fe.cfg.unauthorized(c)
 }

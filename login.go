@@ -53,12 +53,11 @@ type loginState struct {
 	Created int64 `json:"t"`
 }
 
-// LoginHandler returns a handler that starts the authorization code flow with the provider. The browser must initiate
-// the login flow by navigating to it. After login, the browser is redirected to the URL in the returnUrl query
-// parameter, or to "/" if it is absent. It must be a local URL or a URL of a trusted origin (see [WithTrustedOrigins]),
-// of at most 1024 bytes once encoded as JSON. The optional prompt query parameter is passed to the provider, such as
-// prompt=none for a silent login. The optional max_age and acr_values query parameters are passed to the provider, and
-// the callback rejects an ID token whose auth_time or acr does not satisfy them.
+// LoginHandler returns a handler that starts the authorization code flow with the provider. The browser must open it
+// with a top-level navigation, because the flow redirects the browser to the provider. After login, the browser is
+// redirected to the URL in the returnUrl query parameter, or to "/" if it is absent. The return URL must be a local URL
+// or a URL of a trusted origin (see [WithTrustedOrigins]), of at most 1024 bytes once encoded as JSON. The optional
+// prompt, max_age and acr_values query parameters are passed to the provider, such as prompt=none for a silent login.
 //
 // When Pushed Authorization Requests (PAR, RFC 9126) are used, each login sends a request to the pushed authorization
 // request endpoint of the provider, so the route should be rate limited. If this request fails, the handler responds

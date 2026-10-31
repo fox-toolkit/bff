@@ -23,8 +23,8 @@ var (
 )
 
 // AccessToken returns the access token of a request authenticated by [Frontend.Authenticate]. It reports false for an
-// anonymous request and for a request not handled by the middleware. The returned token has no refresh token. A
-// DPoP-bound access token must be sent with [Transport].
+// anonymous request and for a request not handled by the middleware. A DPoP-bound access token must be sent with
+// [Transport].
 func AccessToken(ctx context.Context) (*oauth2.Token, bool) {
 	rs, ok := ctx.Value(sessionKey{}).(*requestState)
 	if !ok {
@@ -40,11 +40,8 @@ func AccessToken(ctx context.Context) (*oauth2.Token, bool) {
 // ResourceAccessToken returns the access token of the resource for a request authenticated by [Frontend.Authenticate],
 // as defined by RFC 8707. The resource must be declared with [WithResources]. The token is requested from the provider
 // when the session has none or when it expires. It returns [ErrNoSession] for an anonymous request, for a request not
-// handled by the middleware and when the provider ends the session. The returned token has no refresh token. A
-// DPoP-bound access token must be sent with [ResourceTransport].
-//
-// With a session kept in the cookie, the token must be requested before the response is written, so the new cookie can
-// be set.
+// handled by the middleware and when the provider ends the session. A DPoP-bound access token must be sent with
+// [ResourceTransport].
 func ResourceAccessToken(ctx context.Context, resource string) (*oauth2.Token, error) {
 	rs, ok := ctx.Value(sessionKey{}).(*requestState)
 	if !ok {
@@ -57,25 +54,25 @@ func ResourceAccessToken(ctx context.Context, resource string) (*oauth2.Token, e
 	return t.token(), nil
 }
 
-// Transport returns an [http.RoundTripper] that sets the Authorization header from the access token of the request
-// context, as returned by [AccessToken], and the DPoP proof of a DPoP-bound access token. A request without access
-// token is sent unchanged. A nil base uses [http.DefaultTransport].
+// Transport returns an [http.RoundTripper] that sets the Authorization header with the access token of the request, as
+// returned by [AccessToken]. For a DPoP-bound access token, it also adds a DPoP proof. It does not add an access token
+// to an anonymous request. A nil base uses [http.DefaultTransport].
 func Transport(base http.RoundTripper) http.RoundTripper {
 	return newTransport(base, "")
 }
 
-// ResourceTransport returns an [http.RoundTripper] like [Transport], with the access token of the resource as returned
-// by [ResourceAccessToken]. A request without session on a route with [AllowAnonymous] and a request for a resource
-// that is not declared are sent unchanged. A request fails without being sent when the access token cannot be
-// obtained, with [ErrNoSession] when the provider ends the session. The reverse proxy should use [ProxyErrorHandler].
+// ResourceTransport returns an [http.RoundTripper] that sets the Authorization header with the access token of the
+// resource, as returned by [ResourceAccessToken]. For a DPoP-bound access token, it also adds a DPoP proof. It does not
+// add an access token to an anonymous request or to a request for a resource that is not declared with [WithResources].
+// When the access token cannot be obtained, the request is not sent and the reverse proxy receives the error. Use
+// [ProxyErrorHandler] to respond with the unauthorized handler instead of 502 Bad Gateway when the session has ended.
 func ResourceTransport(base http.RoundTripper, resource string) http.RoundTripper {
 	return newTransport(base, resource)
 }
 
-// ProxyErrorHandler is an ErrorHandler for an [httputil.ReverseProxy] that uses [Transport] or [ResourceTransport]. A
-// request whose session ended gets the response of the unauthorized handler. The other errors are logged and respond
-// with 502 Bad Gateway, or 500 Internal Server Error for a failure of the session store. It must only be called by the
-// reverse proxy.
+// ProxyErrorHandler is the ErrorHandler of an [net/http/httputil.ReverseProxy] that uses [ResourceTransport]. When the
+// session ends while the access token is requested, it responds like a request without session (see
+// [WithUnauthorizedHandler]). Other errors respond with 502 Bad Gateway.
 func ProxyErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	rs, ok := r.Context().Value(sessionKey{}).(*requestState)
 	if !ok || rs.c == nil {

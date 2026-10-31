@@ -69,8 +69,8 @@ func defaultConfig() *config {
 	}
 }
 
-// WithStore keeps the sessions in the store, and the session cookie only contains a key to its session. By default,
-// the session is kept in the cookie.
+// WithStore enables stateful sessions, stored in s. The session cookie then contains only the session ID. By default,
+// sessions are stateless and stored in the cookie. [Frontend.BackchannelHandler] requires a store.
 func WithStore(s store.Store) Option {
 	return optionFunc(func(c *config) error {
 		if s == nil {
@@ -115,7 +115,8 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 	})
 }
 
-// WithUserInfo requests the UserInfo endpoint at login and adds its claims to the ID token claims.
+// WithUserInfo requests the UserInfo endpoint at login and adds its claims to the claims returned by
+// [Frontend.UserHandler] and [UserClaims].
 func WithUserInfo(enable bool) Option {
 	return optionFunc(func(c *config) error {
 		c.userInfo = enable
@@ -124,7 +125,7 @@ func WithUserInfo(enable bool) Option {
 }
 
 // WithDPoP binds the access tokens to a key generated for each session, as defined by RFC 9449. The remote APIs must
-// accept DPoP-bound access tokens.
+// accept DPoP-bound access tokens. Changing this option ends the existing sessions.
 func WithDPoP(enable bool) Option {
 	return optionFunc(func(c *config) error {
 		c.dpop = enable
@@ -272,7 +273,8 @@ func WithRequestObject(enable bool) Option {
 }
 
 // WithCSRFHeader requires the header with the given value on the requests handled by [Frontend.Authenticate] and
-// [Frontend.UserHandler].
+// [Frontend.UserHandler]. A browser sends a cross-origin request with a custom header only after a CORS preflight,
+// which prevents cross-site request forgery (RFC 10017, Section 6.1.3.3.2).
 func WithCSRFHeader(name, value string) Option {
 	return optionFunc(func(c *config) error {
 		if !httpguts.ValidHeaderFieldName(name) {
