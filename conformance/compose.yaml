@@ -1,0 +1,37 @@
+name: bff-conformance
+
+services:
+  mongodb:
+    image: mongo:6.0.13
+    volumes:
+      - mongo:/data/db
+
+  nginx:
+    image: registry.gitlab.com/openid/conformance-suite/nginx:release-v5.3.4
+    ports:
+      - "8443:8443"
+    networks:
+      default:
+        aliases:
+          - localhost.emobix.co.uk
+    depends_on:
+      - server
+
+  server:
+    image: registry.gitlab.com/openid/conformance-suite:release-v5.3.4
+    environment:
+      BASE_URL: https://localhost.emobix.co.uk:8443
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      # Unused with the dev profile, but the server does not start without them.
+      OIDC_GOOGLE_CLIENTID: google-client
+      OIDC_GOOGLE_SECRET: google-secret
+      OIDC_GITLAB_CLIENTID: gitlab-client
+      OIDC_GITLAB_SECRET: gitlab-secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+
+volumes:
+  mongo:

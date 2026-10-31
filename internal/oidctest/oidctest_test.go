@@ -189,7 +189,7 @@ func TestLogoutToken(t *testing.T) {
 	c := newClient(t, Options{})
 	raw := c.srv.LogoutToken("app", "alice", "s1")
 
-	jws, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256})
+	jws, err := jose.ParseSignedCompact(raw, []jose.SignatureAlgorithm{jose.RS256})
 	require.NoError(t, err)
 	assert.Equal(t, "logout+jwt", jws.Signatures[0].Header.ExtraHeaders[jose.HeaderType])
 

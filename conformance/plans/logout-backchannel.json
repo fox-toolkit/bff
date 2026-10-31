@@ -1,0 +1,17 @@
+{
+  "planName": "oidcc-client-back-channel-logout-rp-basic",
+  "variant": {
+    "client_auth_type": "client_secret_basic",
+    "response_mode": "default",
+    "client_registration": "static_client",
+    "request_type": "plain_http_request"
+  },
+  "config": {
+    "description": "fox-toolkit/bff, OpenID Connect Back-Channel Logout",
+    "client": {
+      "client_id": "bff-oidcc",
+      "client_secret": "bff-oidcc-secret"
+    },
+    "waitTimeoutSeconds": 5
+  }
+}

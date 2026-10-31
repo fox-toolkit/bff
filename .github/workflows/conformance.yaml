@@ -1,0 +1,59 @@
+name: conformance
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: Conformance BFF
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '>=1.26'
+          cache: false
+
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Start the conformance suite
+        run: |
+          echo "127.0.0.1 localhost.emobix.co.uk" | sudo tee -a /etc/hosts
+          docker compose -f conformance/compose.yaml up -d
+          docker compose -f conformance/compose.yaml images -q | xargs docker image inspect --format '{{index .RepoDigests 0}}' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the conformance tests
+        working-directory: conformance
+        env:
+          BFF_CONFORMANCE_SUITE: https://localhost.emobix.co.uk:8443
+          BFF_REDIS_ADDR: localhost:6379
+        run: go test -v -timeout 40m ./...
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results
+          path: conformance/results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Stop the conformance suite
+        if: always()
+        run: docker compose -f conformance/compose.yaml down -v

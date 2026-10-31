@@ -87,3 +87,8 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           working-directory: store/redis
+
+      - name: Run conformance linter
+        uses: golangci/golangci-lint-action@v9
+        with:
+          working-directory: conformance

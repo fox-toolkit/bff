@@ -1,0 +1,19 @@
+{
+  "planName": "oidcc-client-refreshtoken-test-plan",
+  "variant": {
+    "client_auth_type": "client_secret_basic",
+    "response_type": "code",
+    "response_mode": "default",
+    "client_registration": "static_client",
+    "request_type": "plain_http_request"
+  },
+  "config": {
+    "description": "fox-toolkit/bff, OpenID Connect Core refresh token",
+    "client": {
+      "client_id": "bff-oidcc",
+      "client_secret": "bff-oidcc-secret",
+      "scope": "openid offline_access"
+    },
+    "waitTimeoutSeconds": 5
+  }
+}

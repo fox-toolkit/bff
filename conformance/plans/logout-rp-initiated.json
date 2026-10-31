@@ -1,0 +1,27 @@
+{
+  "planName": "oidcc-client-rp-initiated-logout-rp-basic",
+  "variant": {
+    "client_auth_type": "client_secret_basic",
+    "response_mode": "default",
+    "client_registration": "static_client",
+    "request_type": "plain_http_request"
+  },
+  "config": {
+    "description": "fox-toolkit/bff, OpenID Connect RP-Initiated Logout",
+    "client": {
+      "client_id": "bff-oidcc",
+      "client_secret": "bff-oidcc-secret"
+    },
+    "waitTimeoutSeconds": 5
+  },
+  "expected": {
+    "oidcc-client-test-rp-init-logout-other-state": {
+      "result": "SKIPPED",
+      "note": "The BFF sends no state to the end session endpoint, which is optional."
+    },
+    "oidcc-client-test-rp-init-logout-no-state": {
+      "result": "SKIPPED",
+      "note": "The BFF sends no state to the end session endpoint, which is optional."
+    }
+  }
+}
