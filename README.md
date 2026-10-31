@@ -111,8 +111,9 @@ and the OpenID Foundation:
 
 ## Conformance
 BFF passes the client test plans of the [OpenID Foundation conformance suite](https://openid.net/certification/)
-v5.3.3: FAPI 2.0 Security Profile and FAPI 2.0 Message Signing with the configuration below, and OpenID Connect Basic,
-refresh token, Back-Channel Logout and RP-Initiated Logout with a client secret.
+v5.3.4 (see the [conformance](conformance) module). The FAPI 2.0 Security Profile and FAPI 2.0 Message Signing plans
+use the configuration below, and the OpenID Connect Basic, Config, refresh token, Back-Channel Logout and RP-Initiated
+Logout plans use a client secret.
 
 ````go
 fe, err := bff.NewFrontend(bff.Client{
