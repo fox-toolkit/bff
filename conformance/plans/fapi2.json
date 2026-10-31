@@ -1,0 +1,19 @@
+{
+  "planName": "fapi2-security-profile-final-client-test-plan",
+  "variant": {
+    "client_auth_type": "private_key_jwt",
+    "sender_constrain": "dpop",
+    "fapi_profile": "plain_fapi",
+    "fapi_client_type": "oidc",
+    "authorization_request_type": "simple",
+    "grant_management": "disabled"
+  },
+  "config": {
+    "description": "fox-toolkit/bff, FAPI 2.0 Security Profile",
+    "client": {
+      "client_id": "bff-fapi2",
+      "scope": "openid"
+    },
+    "waitTimeoutSeconds": 5
+  }
+}
