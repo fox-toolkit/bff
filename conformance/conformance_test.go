@@ -46,24 +46,9 @@ var plans = []plan{
 		run:     get("/api/open-banking/v1.1/accounts"),
 	},
 	{name: "oidcc-basic", options: userInfo},
-	{
-		name: "oidcc-config",
-		// This module finishes when the client fetches the discovery, and fails on any later request.
-		noLogin: "oidcc-client-test-discovery-openid-config",
-		options: func(m string) []bff.Option {
-			// This module finishes when the client fetches the key set, and fails on any later request.
-			if m == "oidcc-client-test-discovery-jwks-uri-keys" {
-				return nil
-			}
-			return userInfo(m)
-		},
-		run: func(b *browser, module string) {
-			// The provider rotates its keys after the first ID token.
-			if module == "oidcc-client-test-signing-key-rotation" {
-				b.login()
-			}
-		},
-	},
+	{name: "oidcc-config", noLogin: discoveryModule, options: configOptions, run: configRun},
+	// It includes the modules of the Basic and Config plans.
+	{name: "oidcc-comprehensive", noLogin: discoveryModule, options: configOptions, run: configRun},
 	{name: "oidcc-refresh", resourceOnly: true, options: userInfo, run: get("/api/userinfo")},
 	{
 		name:      "logout-backchannel",
@@ -86,6 +71,24 @@ func fapi2(string) []bff.Option {
 
 func userInfo(string) []bff.Option {
 	return []bff.Option{bff.WithUserInfo(true)}
+}
+
+// This module finishes when the client fetches the discovery, and fails on any later request.
+const discoveryModule = "oidcc-client-test-discovery-openid-config"
+
+func configOptions(module string) []bff.Option {
+	// This module finishes when the client fetches the key set, and fails on any later request.
+	if module == "oidcc-client-test-discovery-jwks-uri-keys" {
+		return nil
+	}
+	return userInfo(module)
+}
+
+func configRun(b *browser, module string) {
+	// The provider rotates its keys after the first ID token.
+	if module == "oidcc-client-test-signing-key-rotation" {
+		b.login()
+	}
 }
 
 func get(p string) func(b *browser, module string) {

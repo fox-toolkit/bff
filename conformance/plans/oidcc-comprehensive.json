@@ -1,0 +1,32 @@
+{
+  "planName": "oidcc-client-test-plan",
+  "variant": {
+    "client_auth_type": "client_secret_basic",
+    "response_type": "code",
+    "response_mode": "default",
+    "request_type": "plain_http_request",
+    "client_registration": "static_client"
+  },
+  "config": {
+    "description": "fox-toolkit/bff, OpenID Connect Core comprehensive",
+    "client": {
+      "client_id": "bff-oidcc",
+      "client_secret": "bff-oidcc-comprehensive-secret-hs256"
+    },
+    "waitTimeoutSeconds": 5
+  },
+  "expected": {
+    "oidcc-client-test-idtoken-sig-none": {
+      "result": "SKIPPED",
+      "note": "The BFF rejects unsigned ID tokens, which the suite accepts."
+    },
+    "oidcc-client-test-userinfo-bearer-body": {
+      "result": "FAILED",
+      "note": "The BFF sends the access token in the Authorization header (RFC 6750 2.1), and the module expects it in the body."
+    },
+    "oidcc-client-test-distributed-claims": {
+      "result": "INTERRUPTED",
+      "note": "The BFF does not fetch distributed claims, which are optional (OIDC Core 5.6.2)."
+    }
+  }
+}
