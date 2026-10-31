@@ -109,7 +109,7 @@ func TestLogin(t *testing.T) {
 
 	lines := rec.Header().Values("Set-Cookie")
 	require.Len(t, lines, 1)
-	assert.True(t, strings.HasPrefix(lines[0], "__Host-bff-login-"+q.Get("state")+".0="))
+	assert.True(t, strings.HasPrefix(lines[0], "__Host-Http-bff-login-"+q.Get("state")+".0="))
 	assert.Contains(t, lines[0], "Max-Age=900; HttpOnly; Secure; SameSite=Lax")
 }
 
@@ -230,7 +230,7 @@ func TestSilentLogin(t *testing.T) {
 	assert.Equal(t, "/home", res.Header().Get("Location"))
 	lines := res.Header().Values("Set-Cookie")
 	require.Len(t, lines, 1)
-	assert.Contains(t, lines[0], "__Host-bff-login-")
+	assert.Contains(t, lines[0], "__Host-Http-bff-login-")
 }
 
 func TestLoginInvalid(t *testing.T) {
@@ -376,7 +376,7 @@ func TestCallbackInvalid(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, res.Code)
 			lines := res.Header().Values("Set-Cookie")
 			require.Len(t, lines, 1)
-			assert.Contains(t, lines[0], "__Host-bff-login-")
+			assert.Contains(t, lines[0], "__Host-Http-bff-login-")
 		})
 	}
 

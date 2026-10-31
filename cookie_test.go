@@ -67,7 +67,7 @@ func TestCookieRoundTrip(t *testing.T) {
 		lines := h.Values("Set-Cookie")
 		for _, line := range lines {
 			assert.LessOrEqual(t, len(line), 4096)
-			assert.True(t, strings.HasPrefix(line, "__Host-bff."))
+			assert.True(t, strings.HasPrefix(line, "__Host-Http-bff."))
 			assert.Contains(t, line, "; Path=/; HttpOnly; Secure; SameSite=Strict")
 		}
 
@@ -89,10 +89,10 @@ func TestCookieWriteDeletesStaleChunks(t *testing.T) {
 	require.NoError(t, sessionCookie.write(h, aead, []byte("a"), 3600, prev))
 	lines := h.Values("Set-Cookie")
 	require.Len(t, lines, 3)
-	assert.Contains(t, lines[0], "__Host-bff.0=")
+	assert.Contains(t, lines[0], "__Host-Http-bff.0=")
 	assert.Contains(t, lines[0], "Max-Age=3600")
-	assert.Contains(t, lines[1], "__Host-bff.1=; Path=/; Max-Age=0")
-	assert.Contains(t, lines[2], "__Host-bff.2=; Path=/; Max-Age=0")
+	assert.Contains(t, lines[1], "__Host-Http-bff.1=; Path=/; Max-Age=0")
+	assert.Contains(t, lines[2], "__Host-Http-bff.2=; Path=/; Max-Age=0")
 }
 
 func TestCookieReadIgnoresStaleChunks(t *testing.T) {
@@ -116,8 +116,8 @@ func TestCookieClear(t *testing.T) {
 	h := make(http.Header)
 	loginCookie("abc").clear(h, 2)
 	assert.Equal(t, []string{
-		"__Host-bff-login-abc.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
-		"__Host-bff-login-abc.1=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+		"__Host-Http-bff-login-abc.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+		"__Host-Http-bff-login-abc.1=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
 	}, h.Values("Set-Cookie"))
 }
 
@@ -145,15 +145,15 @@ func TestCookieReadInvalid(t *testing.T) {
 		{name: "duplicate chunk", cookies: []*http.Cookie{valid[0], valid[1], valid[1]}},
 		{name: "swapped chunks", cookies: []*http.Cookie{cookie(valid[0].Name, valid[1].Value), cookie(valid[1].Name, valid[0].Value), valid[2]}},
 		{name: "tampered value", cookies: []*http.Cookie{valid[0], valid[1], cookie(valid[2].Name, "AAAA"+valid[2].Value[4:])}},
-		{name: "invalid base64", cookies: []*http.Cookie{cookie("__Host-bff.0", "!!!")}},
-		{name: "empty value", cookies: []*http.Cookie{cookie("__Host-bff.0", "")}},
-		{name: "leading zero", cookies: []*http.Cookie{cookie("__Host-bff.00", "x")}},
-		{name: "signed index", cookies: []*http.Cookie{cookie("__Host-bff.+0", "x")}},
-		{name: "not a number", cookies: []*http.Cookie{cookie("__Host-bff.x", "x")}},
-		{name: "index out of range", cookies: []*http.Cookie{cookie("__Host-bff.999999", "x")}},
-		{name: "no count", cookies: []*http.Cookie{cookie("__Host-bff.0", "abc")}},
-		{name: "zero count", cookies: []*http.Cookie{cookie("__Host-bff.0", "0.abc")}},
-		{name: "count beyond chunks", cookies: []*http.Cookie{cookie("__Host-bff.0", "2.abc")}},
+		{name: "invalid base64", cookies: []*http.Cookie{cookie("__Host-Http-bff.0", "!!!")}},
+		{name: "empty value", cookies: []*http.Cookie{cookie("__Host-Http-bff.0", "")}},
+		{name: "leading zero", cookies: []*http.Cookie{cookie("__Host-Http-bff.00", "x")}},
+		{name: "signed index", cookies: []*http.Cookie{cookie("__Host-Http-bff.+0", "x")}},
+		{name: "not a number", cookies: []*http.Cookie{cookie("__Host-Http-bff.x", "x")}},
+		{name: "index out of range", cookies: []*http.Cookie{cookie("__Host-Http-bff.999999", "x")}},
+		{name: "no count", cookies: []*http.Cookie{cookie("__Host-Http-bff.0", "abc")}},
+		{name: "zero count", cookies: []*http.Cookie{cookie("__Host-Http-bff.0", "0.abc")}},
+		{name: "count beyond chunks", cookies: []*http.Cookie{cookie("__Host-Http-bff.0", "2.abc")}},
 		{name: "other purpose", cookies: valid, spec: cookieSpec{name: sessionCookie.name, purpose: "login"}},
 	}
 	for _, tc := range cases {
@@ -177,7 +177,7 @@ func FuzzCookieRead(f *testing.F) {
 		seed = append(seed, c.String())
 	}
 	f.Add(strings.Join(seed, "; "))
-	f.Add("__Host-bff.1=a; __Host-bff.0=b; __Host-bff.0=c")
+	f.Add("__Host-Http-bff.1=a; __Host-Http-bff.0=b; __Host-Http-bff.0=c")
 
 	f.Fuzz(func(t *testing.T, line string) {
 		cookies, err := http.ParseCookie(line)

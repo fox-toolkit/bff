@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	cookiePrefix = "__Host-"
+	cookiePrefix = "__Host-Http-"
 	// maxChunkSize is the maximum length of a cookie value. It leaves room for the name and attributes within the
 	// 4096 bytes that browsers accept for a cookie.
 	maxChunkSize = 3800

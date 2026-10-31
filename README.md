@@ -9,7 +9,7 @@
 BFF is an OpenID Connect Relying Party and OAuth 2.0 client for the [Fox](https://github.com/fox-toolkit/fox) router.
 It provides a set of handlers and middleware to build a Backend For Frontend, the server-side gateway between a browser
 application and its APIs, as described in
-[OAuth 2.0 for Browser-Based Applications](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-browser-based-apps).
+[OAuth 2.0 for Browser-Based Applications](https://www.rfc-editor.org/rfc/rfc10017.html).
 
 ## Disclaimer
 The current API is not yet stabilized. Breaking changes may occur before v1.0.0 and will be noted on the release note.
@@ -78,7 +78,7 @@ func main() {
 	f.MustAdd(fox.MethodAny, "/api/*{path}", fox.WrapH(proxy), fox.WithMiddleware(fe.Authenticate()))
 
 	// The browser-based application is served here by the BFF. For other deployments, see
-	// https://datatracker.ietf.org/doc/html/draft-ietf-oauth-browser-based-apps#section-6.1.2.5. A cross-origin
+	// https://www.rfc-editor.org/rfc/rfc10017.html#section-6.1.2.5. A cross-origin
 	// application requires bff.WithTrustedOrigins and a CORS middleware that allows its origin with credentials.
 	f.MustAdd(fox.MethodGet, "/*{filepath}", fox.WrapH(http.FileServer(http.Dir("dist"))))
 	
