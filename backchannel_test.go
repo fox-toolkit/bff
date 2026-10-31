@@ -88,7 +88,7 @@ func TestBackchannel(t *testing.T) {
 			for name, cookies := range sessions {
 				_, _, err := e.fe.readSession(t.Context(), cookies)
 				if slices.Contains(tc.deleted, name) {
-					assert.ErrorIs(t, err, ErrNoSession)
+					assert.ErrorIs(t, err, errNoSession)
 				} else {
 					assert.NoError(t, err)
 				}

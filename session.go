@@ -27,7 +27,7 @@ const (
 	maxConcurrentRevocations = 4
 )
 
-var ErrNoSession = errors.New("no session")
+var errNoSession = errors.New("no session")
 
 // session is the state of a logged in user. Times are unix seconds, to keep the stateless cookie small.
 type session struct {
@@ -144,16 +144,27 @@ func (t resourceToken) stale(now time.Time) bool {
 	return t.Expiry != 0 && !now.Add(skew(t.Lifetime)).Before(time.Unix(t.Expiry, 0))
 }
 
-// adopt replaces the tokens of s with the tokens of latest.
-func (s *session) adopt(latest *session) {
-	s.IDToken = latest.IDToken
-	s.AccessToken = latest.AccessToken
-	s.TokenType = latest.TokenType
-	s.RefreshToken = latest.RefreshToken
-	s.Resources = maps.Clone(latest.Resources)
-	s.Expiry = latest.Expiry
-	s.Lifetime = latest.Lifetime
-	s.Generation = latest.Generation
+// mergeTokens replaces the tokens of s with the tokens of a newer version of the session. It keeps the access tokens of
+// the resources that newer does not have, since they stay valid until they expire.
+func (s *session) mergeTokens(newer *session) {
+	resources := make(map[string]resourceToken, len(s.Resources)+len(newer.Resources))
+	maps.Copy(resources, s.Resources)
+	maps.Copy(resources, newer.Resources)
+	s.Resources = resources
+	s.IDToken = newer.IDToken
+	s.AccessToken = newer.AccessToken
+	s.TokenType = newer.TokenType
+	s.RefreshToken = newer.RefreshToken
+	s.Expiry = newer.Expiry
+	s.Lifetime = newer.Lifetime
+	s.Generation = newer.Generation
+}
+
+// clone returns a copy of s that does not share its access tokens of the resources.
+func (s *session) clone() *session {
+	c := *s
+	c.Resources = maps.Clone(s.Resources)
+	return &c
 }
 
 // prune removes the access tokens of the resources that expired or are no longer declared.
@@ -169,7 +180,7 @@ func decodeSession(data []byte) (*session, error) {
 		return nil, err
 	}
 	if s.Version != sessionVersion {
-		return nil, ErrNoSession
+		return nil, errNoSession
 	}
 	return s, nil
 }
@@ -188,18 +199,18 @@ type sessionState struct {
 	chunks int
 }
 
-// readSession returns the session of the request. It returns ErrNoSession when the request has no valid session, with
+// readSession returns the session of the request. It returns errNoSession when the request has no valid session, with
 // the state of the cookie so it can be deleted.
 func (fe *Frontend) readSession(ctx context.Context, cookies []*http.Cookie) (*session, sessionState, error) {
 	plaintext, chunks, err := sessionCookie.read(cookies, fe.aead)
 	st := sessionState{chunks: chunks}
 	if err != nil {
-		return nil, st, ErrNoSession
+		return nil, st, errNoSession
 	}
 	if fe.cfg.store == nil {
 		s, decodeErr := decodeSession(plaintext)
 		if decodeErr != nil {
-			return nil, st, ErrNoSession
+			return nil, st, errNoSession
 		}
 		return s, st, nil
 	}
@@ -207,25 +218,25 @@ func (fe *Frontend) readSession(ctx context.Context, cookies []*http.Cookie) (*s
 	id := storeID(plaintext)
 	r, err := fe.cfg.store.Load(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, st, ErrNoSession
+		return nil, st, errNoSession
 	}
 	if err != nil {
 		return nil, st, err
 	}
 	data, err := fe.aead.Decrypt(r.Data, storeAssociatedData(id))
 	if err != nil {
-		return nil, st, ErrNoSession
+		return nil, st, errNoSession
 	}
 	s, err := decodeSession(data)
 	if err != nil {
-		return nil, st, ErrNoSession
+		return nil, st, errNoSession
 	}
 	st.id = id
 	return s, st, nil
 }
 
 // writeSession saves the session and adds the cookie to h when it changes. A stateful frontend creates a new session
-// key when the state has no id, so a login never reuses an existing session. It returns ErrNoSession when an existing
+// key when the state has no id, so a login never reuses an existing session. It returns errNoSession when an existing
 // session no longer exists in the store.
 func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session, st sessionState) error {
 	s.prune(fe.cfg.resources, fe.now())
@@ -259,7 +270,7 @@ func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session,
 		err = fe.cfg.store.Update(ctx, st.id, r)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			return ErrNoSession
+			return errNoSession
 		case errors.Is(err, store.ErrConflict):
 			// Another request stored newer tokens of the session.
 			return nil
@@ -300,7 +311,7 @@ func (fe *Frontend) endSession(ctx context.Context, h http.Header, s *session, s
 			}
 		}
 		if latest != nil && latest.Generation > s.Generation {
-			s.adopt(latest)
+			s.mergeTokens(latest)
 		}
 		if err := fe.deleteSession(ctx, h, st); err != nil {
 			return nil, err

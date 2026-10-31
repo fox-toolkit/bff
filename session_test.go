@@ -163,7 +163,7 @@ func TestSessionStateful(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, ms.Update(ctx, other.id, r))
 		_, _, err = fe.readSession(ctx, requestCookies(t, h))
-		assert.ErrorIs(t, err, ErrNoSession)
+		assert.ErrorIs(t, err, errNoSession)
 	})
 
 	t.Run("deleted", func(t *testing.T) {
@@ -171,7 +171,7 @@ func TestSessionStateful(t *testing.T) {
 		require.NoError(t, fe.deleteSession(ctx, h, st))
 		assert.Len(t, h.Values("Set-Cookie"), 1)
 		_, st, err := fe.readSession(ctx, cookies)
-		assert.ErrorIs(t, err, ErrNoSession)
+		assert.ErrorIs(t, err, errNoSession)
 		assert.Equal(t, 1, st.chunks)
 	})
 }
@@ -185,7 +185,7 @@ func TestSessionVersion(t *testing.T) {
 	h := make(http.Header)
 	require.NoError(t, sessionCookie.write(h, fe.aead, data, 0, 0))
 	_, _, err = fe.readSession(t.Context(), requestCookies(t, h))
-	assert.ErrorIs(t, err, ErrNoSession)
+	assert.ErrorIs(t, err, errNoSession)
 }
 
 func TestSessionExpires(t *testing.T) {
@@ -235,7 +235,7 @@ func TestSessionBoundToFrontend(t *testing.T) {
 	_, _, err = e.fe.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 	_, _, err = admin.readSession(t.Context(), cookies)
-	assert.ErrorIs(t, err, ErrNoSession)
+	assert.ErrorIs(t, err, errNoSession)
 }
 
 // slowStore stores the sessions late, so a concurrent request reads the session before it is stored.

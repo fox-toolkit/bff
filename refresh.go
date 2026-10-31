@@ -206,7 +206,7 @@ func (fe *Frontend) updateTokens(ctx context.Context, s *session, st sessionStat
 			}
 		}
 		if latest != nil && latest.Generation > s.Generation {
-			s.adopt(latest)
+			s.mergeTokens(latest)
 			changed = true
 		}
 		updated, err := false, shared
@@ -219,22 +219,21 @@ func (fe *Frontend) updateTokens(ctx context.Context, s *session, st sessionStat
 		if !changed {
 			return nil, err
 		}
-		keep := *s
-		keep.adopt(s)
-		return &keep, err
+		return s.clone(), err
 	})
 	return changed, err
 }
 
 // tokenRequest is the context of a token request and of the write of its result. It starts once the lock of the
 // session is held, and the request that started it does not cancel it, since the provider may replace the refresh
-// token.
+// token. A new token request replaces the context of the previous one.
 type tokenRequest struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 func (tr *tokenRequest) start(ctx context.Context) {
+	tr.stop()
 	tr.ctx, tr.cancel = context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 }
 
@@ -276,6 +275,28 @@ func (fe *Frontend) refresh(ctx context.Context, s *session, st sessionState, tr
 			return keepRefreshToken(s, res, err)
 		}
 		s.setToken(res.token, res.at)
+		if res.idToken != "" {
+			s.IDToken = res.idToken
+		}
+		return true, nil
+	})
+}
+
+// refreshResource requests the access token of the resource when s has none or when it is stale. It reports whether s
+// changed. It returns errSessionEnded when the provider rejects the refresh token.
+func (fe *Frontend) refreshResource(ctx context.Context, s *session, st sessionState, resource string, tr *tokenRequest) (bool, error) {
+	if s.RefreshToken == "" {
+		return false, errNoRefreshToken
+	}
+	return fe.updateTokens(ctx, s, st, resource, tr, func() (bool, error) {
+		if t, ok := s.Resources[resource]; ok && !t.stale(fe.now()) {
+			return false, nil
+		}
+		res, err := fe.redeem(tr.ctx, s, resource)
+		if err != nil {
+			return keepRefreshToken(s, res, err)
+		}
+		s.setResourceToken(resource, res.token, res.at)
 		if res.idToken != "" {
 			s.IDToken = res.idToken
 		}

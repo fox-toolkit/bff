@@ -390,7 +390,7 @@ func TestMiddlewareRefreshFailureSharedKeepsLatest(t *testing.T) {
 	e.skipAhead(20 * time.Second)
 	e.doContext(e.cancelOnRefresh(t), "/api", cookies)
 
-	e.skipAhead(40 * time.Second)
+	e.skipAhead(55 * time.Second)
 	client := *e.fe.provider.client
 	fr := &failRefresh{base: client.Transport, release: make(chan struct{})}
 	fr.fail.Store(true)

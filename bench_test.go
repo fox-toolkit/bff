@@ -20,23 +20,36 @@ import (
 )
 
 func BenchmarkMiddleware(b *testing.B) {
-	for _, stateful := range []bool{false, true} {
-		name := "stateless"
-		var opts []Option
-		if stateful {
-			name = "stateful"
-			opts = append(opts, WithStore(memory.NewStore()))
-		}
-		b.Run(name, func(b *testing.B) {
-			e := newTestEnv(b, oidctest.Options{AccessTokenTTL: 24 * time.Hour}, opts...)
+	for _, tc := range []struct {
+		name      string
+		opts      []Option
+		resources []string
+	}{
+		{name: "stateless"},
+		{name: "stateful", opts: []Option{WithStore(memory.NewStore())}},
+		{name: "stateless resource", opts: []Option{WithResources(billing)}, resources: []string{billing}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			e := newTestEnv(b, oidctest.Options{AccessTokenTTL: 24 * time.Hour}, tc.opts...)
+			routeOpts := []fox.RouteOption{fox.WithMiddleware(e.fe.Authenticate())}
+			if len(tc.resources) > 0 {
+				routeOpts = append(routeOpts, ForResource(tc.resources...))
+			}
 			_, err := e.router.Add(fox.MethodGet, "/api", func(c *fox.Context) {
 				c.Writer().WriteHeader(http.StatusOK)
-			}, fox.WithMiddleware(e.fe.Authenticate()))
+			}, routeOpts...)
 			require.NoError(b, err)
 
 			req, err := http.NewRequest(http.MethodGet, appOrigin+"/api", nil)
 			require.NoError(b, err)
-			for _, c := range e.loggedIn(b) {
+			cookies := e.loggedIn(b)
+			if len(tc.resources) > 0 {
+				// The first request obtains the access token of the resource.
+				rec := e.do(http.MethodGet, "/api", cookies, nil)
+				require.Equal(b, http.StatusOK, rec.Code)
+				cookies = requestCookies(b, rec.Header())
+			}
+			for _, c := range cookies {
 				req.AddCookie(c)
 			}
 

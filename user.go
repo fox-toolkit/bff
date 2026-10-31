@@ -45,7 +45,7 @@ func (fe *Frontend) UserHandler() fox.HandlerFunc {
 			return
 		}
 
-		s, _, err := fe.currentSession(r, w.Header())
+		s, err := fe.currentSession(r, w.Header(), nil)
 		if err != nil {
 			fe.sessionError(w, r, err)
 			return

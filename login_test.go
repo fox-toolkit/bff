@@ -213,7 +213,7 @@ func TestCallbackReplacesSession(t *testing.T) {
 	assert.Len(t, ms.records, 1)
 
 	_, _, err := e.fe.readSession(t.Context(), first)
-	assert.ErrorIs(t, err, ErrNoSession)
+	assert.ErrorIs(t, err, errNoSession)
 	_, _, err = e.fe.readSession(t.Context(), requestCookies(t, second.Header()))
 	assert.NoError(t, err)
 }
