@@ -122,15 +122,15 @@ type expectedResult struct {
 }
 
 func TestConformance(t *testing.T) {
-	suiteURL := os.Getenv("BFF_CONFORMANCE_SUITE")
+	suiteURL := os.Getenv("RP_CONFORMANCE_SUITE")
 	if suiteURL == "" {
-		t.Skip("BFF_CONFORMANCE_SUITE not set")
+		t.Skip("RP_CONFORMANCE_SUITE not set")
 	}
 	s := newSuite(t, suiteURL)
 
 	stores := []string{"stateless", "memory"}
 	var rdb *goredis.Client
-	if addr := os.Getenv("BFF_REDIS_ADDR"); addr != "" {
+	if addr := os.Getenv("RP_REDIS_ADDR"); addr != "" {
 		rdb = goredis.NewClient(&goredis.Options{Addr: addr})
 		t.Cleanup(func() { _ = rdb.Close() })
 		stores = append(stores, "redis")

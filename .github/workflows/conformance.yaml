@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   conformance:
-    name: Conformance BFF
+    name: Conformance RP
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -41,8 +41,8 @@ jobs:
       - name: Run the conformance tests
         working-directory: conformance
         env:
-          BFF_CONFORMANCE_SUITE: https://localhost.emobix.co.uk:8443
-          BFF_REDIS_ADDR: localhost:6379
+          RP_CONFORMANCE_SUITE: https://localhost.emobix.co.uk:8443
+          RP_REDIS_ADDR: localhost:6379
         run: go test -v -timeout 40m ./...
 
       - name: Upload the results

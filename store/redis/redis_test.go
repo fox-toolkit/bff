@@ -55,9 +55,9 @@ func TestStore(t *testing.T) {
 }
 
 func redisClient(t *testing.T) *goredis.Client {
-	addr := os.Getenv("BFF_REDIS_ADDR")
+	addr := os.Getenv("RP_REDIS_ADDR")
 	if addr == "" {
-		t.Skip("BFF_REDIS_ADDR not set")
+		t.Skip("RP_REDIS_ADDR not set")
 	}
 	client := goredis.NewClient(&goredis.Options{Addr: addr})
 	t.Cleanup(func() { _ = client.Close() })
@@ -77,7 +77,7 @@ func newRedisStore(t *testing.T, client *goredis.Client) *Store {
 	return s
 }
 
-// TestStoreRedis runs against the Redis server at BFF_REDIS_ADDR. Its keys expire on the server clock, so the tests
+// TestStoreRedis runs against the Redis server at RP_REDIS_ADDR. Its keys expire on the server clock, so the tests
 // only rely on the expiry checked by the store.
 func TestStoreRedis(t *testing.T) {
 	client := redisClient(t)
@@ -89,7 +89,7 @@ func TestStoreRedis(t *testing.T) {
 	})
 }
 
-// TestStoreRedisMaxmemory sets maxmemory on the server at BFF_REDIS_ADDR, which must use the noeviction policy.
+// TestStoreRedisMaxmemory sets maxmemory on the server at RP_REDIS_ADDR, which must use the noeviction policy.
 func TestStoreRedisMaxmemory(t *testing.T) {
 	client := redisClient(t)
 	s := newRedisStore(t, client)
