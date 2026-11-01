@@ -71,7 +71,7 @@ func TestBackchannel(t *testing.T) {
 			}
 			refreshTokens := make(map[string]string)
 			for name, cookies := range sessions {
-				s, _, err := e.fe.readSession(t.Context(), cookies)
+				s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 				require.NoError(t, err)
 				refreshTokens[name] = s.RefreshToken
 			}
@@ -86,7 +86,7 @@ func TestBackchannel(t *testing.T) {
 			}
 			assert.ElementsMatch(t, revoked, e.idp.Revoked())
 			for name, cookies := range sessions {
-				_, _, err := e.fe.readSession(t.Context(), cookies)
+				_, _, err := e.fe.rp.readSession(t.Context(), cookies)
 				if slices.Contains(tc.deleted, name) {
 					assert.ErrorIs(t, err, errNoSession)
 				} else {
@@ -167,7 +167,7 @@ func TestBackchannelUnknownKeyID(t *testing.T) {
 	e, _ := newBackchannelEnv(t)
 	e.loggedIn(t)
 	var n atomic.Int32
-	client := e.fe.provider.client
+	client := e.fe.rp.provider.client
 	client.Transport = keySetRequests{base: client.Transport, n: &n}
 
 	e.idp.RotateKey()
@@ -187,7 +187,7 @@ func FuzzVerifyLogoutToken(f *testing.F) {
 	f.Add("eyJhbGciOiJub25lIn0.e30.")
 	f.Add(e.idp.Sign("JWT", map[string]any{"iss": e.idp.URL, "aud": "other", "sub": "alice"}))
 	f.Fuzz(func(t *testing.T, raw string) {
-		_, _, err := e.fe.verifyLogoutToken(t.Context(), raw)
+		_, _, err := e.fe.rp.verifyLogoutToken(t.Context(), raw)
 		assert.Error(t, err)
 	})
 }
@@ -229,7 +229,7 @@ func TestDeleteSessionsByBudget(t *testing.T) {
 			}
 
 			var inflight, peak, attempts atomic.Int32
-			client := *e.fe.provider.client
+			client := *e.fe.rp.provider.client
 			client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				attempts.Add(1)
 				n := inflight.Add(1)
@@ -247,13 +247,13 @@ func TestDeleteSessionsByBudget(t *testing.T) {
 					return nil, r.Context().Err()
 				}
 			})
-			e.fe.provider.client = &client
+			e.fe.rp.provider.client = &client
 
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				cancel()
 				start := time.Now()
-				require.NoError(t, e.fe.deleteSessionsBy(ctx, "alice", ""))
+				require.NoError(t, e.fe.rp.deleteSessionsBy(ctx, "alice", ""))
 				assert.Equal(t, tc.elapsed, time.Since(start))
 			})
 			assert.Equal(t, int32(maxConcurrentRevocations), peak.Load())
@@ -276,7 +276,7 @@ func TestDeleteSessionsByPanic(t *testing.T) {
 	}
 
 	var calls atomic.Int32
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	base := client.Transport
 	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/revoke" && calls.Add(1) == 1 {
@@ -284,9 +284,9 @@ func TestDeleteSessionsByPanic(t *testing.T) {
 		}
 		return base.RoundTrip(r)
 	})
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 
-	assert.PanicsWithValue(t, "transport bug", func() { _ = e.fe.deleteSessionsBy(t.Context(), "alice", "") })
+	assert.PanicsWithValue(t, "transport bug", func() { _ = e.fe.rp.deleteSessionsBy(t.Context(), "alice", "") })
 	assert.Len(t, e.idp.Revoked(), 4)
 	assert.Empty(t, ms.records)
 }
@@ -318,7 +318,7 @@ func TestDeleteSessionsByStoreError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	assert.ErrorIs(t, e.fe.deleteSessionsBy(ctx, "alice", ""), errPartial)
+	assert.ErrorIs(t, e.fe.rp.deleteSessionsBy(ctx, "alice", ""), errPartial)
 	assert.NoError(t, ps.ctxErr)
 	assert.Len(t, e.idp.Revoked(), 2)
 }

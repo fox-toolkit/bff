@@ -85,7 +85,7 @@ func TestTransport(t *testing.T) {
 	e.mountProxy(t, "/api/*{any}", u)
 	e.mountProxy(t, "/public/*{any}", u, AllowAnonymous())
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	rec := e.do(http.MethodGet, "/api/orders", append(cookies, &http.Cookie{Name: "other", Value: "1"}), nil)
@@ -249,7 +249,7 @@ func bearer(t *testing.T, r *http.Request) string {
 
 func TestResourceTransport(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
-		opts := []Option{WithResources(billing, orders)}
+		opts := []FrontendOption{WithResources(billing, orders)}
 		if stateful {
 			opts = append(opts, WithStore(&mapStore{records: make(map[string]store.Record)}))
 		}
@@ -311,7 +311,7 @@ func TestResourceTokenRenewal(t *testing.T) {
 
 func TestResourceConcurrent(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
-		opts := []Option{WithResources(billing, orders)}
+		opts := []FrontendOption{WithResources(billing, orders)}
 		if stateful {
 			opts = append(opts, WithStore(slowStore{&mapStore{records: make(map[string]store.Record)}}))
 		}
@@ -371,11 +371,11 @@ func TestResourceErrors(t *testing.T) {
 	t.Run("session ended", func(t *testing.T) {
 		cases := []struct {
 			name string
-			opts []Option
+			opts []FrontendOption
 			code int
 		}{
 			{name: "default unauthorized handler", code: http.StatusUnauthorized},
-			{name: "custom unauthorized handler", code: http.StatusTeapot, opts: []Option{WithUnauthorizedHandler(func(c *fox.Context) {
+			{name: "custom unauthorized handler", code: http.StatusTeapot, opts: []FrontendOption{WithUnauthorizedHandler(func(c *fox.Context) {
 				c.Writer().WriteHeader(http.StatusTeapot)
 			})}},
 		}
@@ -387,9 +387,9 @@ func TestResourceErrors(t *testing.T) {
 				e.mountResourceProxy(t, "/billing/*{any}", u, billing, ForResource(billing, orders))
 				e.mountResourceProxy(t, "/public/*{any}", u, billing, AllowAnonymous())
 				cookies := e.loggedIn(t)
-				s, _, err := e.fe.readSession(t.Context(), cookies)
+				s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 				require.NoError(t, err)
-				require.NoError(t, e.fe.revoke(t.Context(), s.RefreshToken))
+				require.NoError(t, e.fe.rp.revoke(t.Context(), s.RefreshToken))
 
 				rec := e.do(http.MethodGet, "/billing/invoices", cookies, nil)
 				assert.Equal(t, tc.code, rec.Code)
@@ -400,9 +400,9 @@ func TestResourceErrors(t *testing.T) {
 				assert.Contains(t, lines[0], "Max-Age=0")
 
 				cookies = e.loggedIn(t)
-				s, _, err = e.fe.readSession(t.Context(), cookies)
+				s, _, err = e.fe.rp.readSession(t.Context(), cookies)
 				require.NoError(t, err)
-				require.NoError(t, e.fe.revoke(t.Context(), s.RefreshToken))
+				require.NoError(t, e.fe.rp.revoke(t.Context(), s.RefreshToken))
 				require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/public/catalog", cookies, nil).Code)
 				assert.Empty(t, (<-u.requests).Header.Get("Authorization"))
 			})
@@ -442,7 +442,7 @@ func TestResourceErrors(t *testing.T) {
 		s := newSession(time.Now())
 		s.Subject, s.AccessToken, s.Expiry = "alice", "access-token", time.Now().Add(time.Hour).Unix()
 		h := make(http.Header)
-		require.NoError(t, e.fe.writeSession(t.Context(), h, s, sessionState{}))
+		require.NoError(t, e.fe.rp.writeSession(t.Context(), h, s, sessionState{}))
 
 		assert.Equal(t, http.StatusBadGateway, e.do(http.MethodGet, "/billing/invoices", requestCookies(t, h), nil).Code)
 		assert.Empty(t, u.requests)
@@ -499,7 +499,7 @@ func TestResourceAccessTokenNotFound(t *testing.T) {
 	e.do(http.MethodGet, "/orders", cookies, nil)
 	assert.True(t, <-found)
 
-	rs := &requestState{fe: e.fe, session: testSession(), resources: []string{orders}}
+	rs := &requestState{rp: e.fe.rp, session: testSession(), resources: []string{orders}}
 	_, ok = ResourceAccessToken(context.WithValue(t.Context(), sessionKey{}, rs), "")
 	assert.False(t, ok)
 }
@@ -551,7 +551,7 @@ func TestResourceCookieWrittenOnce(t *testing.T) {
 		assert.False(t, names[c.Name], c.Name)
 		names[c.Name] = true
 	}
-	s, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+	s, _, err := e.fe.rp.readSession(t.Context(), requestCookies(t, rec.Header()))
 	require.NoError(t, err)
 	assert.Contains(t, s.Resources, billing)
 	assert.Contains(t, s.Resources, orders)
@@ -614,9 +614,9 @@ func TestResourceStatefulLostUpdate(t *testing.T) {
 	require.True(t, <-found)
 	require.True(t, <-found)
 
-	_, st, err := e.fe.readSession(t.Context(), cookies)
+	_, st, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
-	stored, err := e.fe.loadSession(t.Context(), st.id)
+	stored, err := e.fe.rp.loadSession(t.Context(), st.id)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), stored.Generation)
 	assert.Contains(t, stored.Resources, orders)
@@ -652,30 +652,30 @@ func TestResourceNewerSessionKeepsTokens(t *testing.T) {
 		}
 	}, ForResource(billing, orders))
 	cookies := e.loggedIn(t)
-	_, st, err := e.fe.readSession(t.Context(), cookies)
+	_, st, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	var once sync.Once
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	client.Transport = &onRefresh{base: client.Transport, fn: func(form url.Values) {
 		if form.Get("resource") != billing {
 			return
 		}
 		once.Do(func() {
-			other, err := e.fe.loadSession(context.Background(), st.id)
+			other, err := e.fe.rp.loadSession(context.Background(), st.id)
 			require.NoError(t, err)
 			expiry := time.Now().Add(time.Hour)
 			other.setToken(&oauth2.Token{AccessToken: "other-default", TokenType: "Bearer", Expiry: expiry}, time.Now())
 			other.setResourceToken(orders, &oauth2.Token{AccessToken: "other-orders", TokenType: "Bearer", Expiry: expiry}, time.Now())
-			require.NoError(t, e.fe.writeSession(context.Background(), make(http.Header), other, st))
+			require.NoError(t, e.fe.rp.writeSession(context.Background(), make(http.Header), other, st))
 		})
 	}}
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 
 	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/dashboard", cookies, nil).Code)
 	assert.True(t, <-found)
 	assert.True(t, <-found)
-	stored, err := e.fe.loadSession(t.Context(), st.id)
+	stored, err := e.fe.rp.loadSession(t.Context(), st.id)
 	require.NoError(t, err)
 	assert.Contains(t, stored.Resources, billing)
 	assert.Equal(t, "other-orders", stored.Resources[orders].AccessToken)
@@ -718,10 +718,10 @@ func (c *cancelOnRefresh) RoundTrip(r *http.Request) (*http.Response, error) {
 // that request.
 func (e *testEnv) cancelOnRefresh(t *testing.T) context.Context {
 	t.Helper()
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	ct := &cancelOnRefresh{base: client.Transport}
 	client.Transport = ct
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 	ctx, cancel := context.WithCancel(t.Context())
 	ct.cancel = sync.OnceFunc(func() {
 		cancel()
@@ -746,10 +746,10 @@ func (c *countRefresh) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func (e *testEnv) countRefreshes() *atomic.Int32 {
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	c := &countRefresh{base: client.Transport}
 	client.Transport = c
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 	return &c.calls
 }
 
@@ -779,12 +779,12 @@ func TestDeleteEndedSessionCanceledContext(t *testing.T) {
 	ms := &mapStore{records: make(map[string]store.Record)}
 	e := newTestEnv(t, oidctest.Options{}, WithStore(ctxStore{ms}))
 	cookies := e.loggedIn(t)
-	s, st, err := e.fe.readSession(t.Context(), cookies)
+	s, st, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	require.NoError(t, e.fe.deleteEndedSession(ctx, httptest.NewRequest(http.MethodGet, "/", nil), make(http.Header), s, st, errSessionEnded))
+	require.NoError(t, e.fe.rp.deleteEndedSession(ctx, httptest.NewRequest(http.MethodGet, "/", nil), make(http.Header), s, st, errSessionEnded))
 	assert.Empty(t, ms.records)
 }
 
@@ -800,9 +800,9 @@ func TestResourceBearerUnderDPoP(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	cookies = requestCookies(t, rec.Header())
 
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
-	e.fe.tokens.Forget(s.LogoutCSRFToken)
+	e.fe.rp.tokens.Forget(s.LogoutCSRFToken)
 	e.idp.Update(func(o *oidctest.Options) { o.IgnoreDPoP = false })
 	require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/r2", cookies, nil).Code)
 	assert.True(t, <-found)
@@ -838,10 +838,10 @@ func TestResourceStaleTokenProviderDown(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 10 * time.Minute}, WithResources(billing))
 	u := newUpstream(t)
 	e.mountResourceProxy(t, "/billing/*{any}", u, billing)
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	fr := &failRefresh{base: client.Transport}
 	client.Transport = fr
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 	cookies := e.loggedIn(t)
 
 	rec := e.do(http.MethodGet, "/billing/invoices", cookies, nil)
@@ -877,7 +877,7 @@ func TestTokenExpiredDuringRenewal(t *testing.T) {
 			require.Equal(t, http.StatusOK, rec.Code)
 			cookies = requestCookies(t, rec.Header())
 
-			client := *e.fe.provider.client
+			client := *e.fe.rp.provider.client
 			fr := &failRefresh{base: client.Transport}
 			fr.fail.Store(true)
 			client.Transport = &onRefresh{base: fr, fn: func(form url.Values) {
@@ -885,7 +885,7 @@ func TestTokenExpiredDuringRenewal(t *testing.T) {
 					e.skipAhead(2*time.Minute + 5*time.Second)
 				}
 			}}
-			e.fe.provider.client = &client
+			e.fe.rp.provider.client = &client
 			e.skipAhead(110 * time.Second)
 
 			assert.Equal(t, http.StatusBadGateway, e.do(http.MethodGet, "/r", cookies, nil).Code)
@@ -912,18 +912,18 @@ func TestResourceTokenRequestStartsWithLock(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: time.Hour}, WithResources(billing))
 	found := make(chan bool, 1)
 	e.mountResourceToken(t, "/r1", billing, found)
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	dr := &deadlineRefresh{base: client.Transport, left: make(chan time.Duration, 1)}
 	client.Transport = dr
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
 	go func() {
-		_ = e.fe.tokens.Do(t.Context(), s.LogoutCSRFToken, func(*session) (*session, error) {
+		_ = e.fe.rp.tokens.Do(t.Context(), s.LogoutCSRFToken, func(*session) (*session, error) {
 			close(started)
 			<-release
 			return nil, nil
@@ -957,21 +957,21 @@ func TestRenewedSessionWriteStartsAfterLock(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, RotateRefreshTokens: true}, WithResources(billing), WithStore(ds))
 	e.mountHandler(t, "/r", func(*fox.Context) {}, ForResource(billing))
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 	e.skipAhead(20 * time.Second)
 
 	held := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	client.Transport = &onRefresh{base: client.Transport, fn: func(form url.Values) {
 		if form.Get("resource") != "" {
 			return
 		}
 		once.Do(func() {
 			go func() {
-				_ = e.fe.tokens.Do(context.Background(), s.LogoutCSRFToken, func(*session) (*session, error) {
+				_ = e.fe.rp.tokens.Do(context.Background(), s.LogoutCSRFToken, func(*session) (*session, error) {
 					close(held)
 					<-release
 					return nil, nil
@@ -980,7 +980,7 @@ func TestRenewedSessionWriteStartsAfterLock(t *testing.T) {
 			e.waitQueued(t, s.LogoutCSRFToken, 2)
 		})
 	}}
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})

@@ -33,7 +33,7 @@ type plan struct {
 	storeOnly    bool
 	resourceOnly bool
 	noLogin      string // module that runs without login
-	options      func(module string) []bff.Option
+	options      func(module string) []bff.FrontendOption
 	run          func(b *browser, module string)
 }
 
@@ -42,7 +42,7 @@ var plans = []plan{
 	{
 		name:    "fapi2-message-signing",
 		key:     true,
-		options: func(m string) []bff.Option { return append(fapi2(m), bff.WithRequestObject(true)) },
+		options: func(m string) []bff.FrontendOption { return append(fapi2(m), bff.WithRequestObject(true)) },
 		run:     get("/api/open-banking/v1.1/accounts"),
 	},
 	{name: "oidcc-basic", options: userInfo},
@@ -54,29 +54,29 @@ var plans = []plan{
 		name:      "logout-backchannel",
 		storeOnly: true,
 		// The client registers no id_token_signed_response_alg, so RS256 is expected (OIDC Core 3.1.3.7).
-		options: func(m string) []bff.Option { return append(userInfo(m), bff.WithSigningAlgorithms("RS256")) },
+		options: func(m string) []bff.FrontendOption { return append(userInfo(m), bff.WithSigningAlgorithms("RS256")) },
 		run:     (*browser).logoutModule,
 	},
 	// The RP-initiated logout plan also sends back-channel logout requests, which require a store.
 	{name: "logout-rp-initiated", storeOnly: true, options: userInfo, run: (*browser).logoutModule},
 }
 
-func fapi2(string) []bff.Option {
-	return []bff.Option{
+func fapi2(string) []bff.FrontendOption {
+	return []bff.FrontendOption{
 		bff.WithPushedAuthorization(bff.PushedAuthorizationRequired),
 		bff.WithDPoP(true),
 		bff.WithSigningAlgorithms("PS256", "ES256", "EdDSA"),
 	}
 }
 
-func userInfo(string) []bff.Option {
-	return []bff.Option{bff.WithUserInfo(true)}
+func userInfo(string) []bff.FrontendOption {
+	return []bff.FrontendOption{bff.WithUserInfo(true)}
 }
 
 // This module finishes when the client fetches the discovery, and fails on any later request.
 const discoveryModule = "oidcc-client-test-discovery-openid-config"
 
-func configOptions(module string) []bff.Option {
+func configOptions(module string) []bff.FrontendOption {
 	// This module finishes when the client fetches the key set, and fails on any later request.
 	if module == "oidcc-client-test-discovery-jwks-uri-keys" {
 		return nil

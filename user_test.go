@@ -31,7 +31,7 @@ func TestUserHandler(t *testing.T) {
 	}, WithUserInfo(true))
 	e.mountUser(t)
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	rec := e.do(http.MethodGet, "/bff/user", cookies, nil)
@@ -62,7 +62,7 @@ func TestUserHandlerUnauthorized(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 
 	cookies := e.loggedIn(t)
-	e.fe.now = func() time.Time { return time.Now().Add(DefaultAbsoluteTimeout) }
+	e.fe.rp.now = func() time.Time { return time.Now().Add(DefaultAbsoluteTimeout) }
 	rec = e.do(http.MethodGet, "/bff/user", cookies, nil)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Len(t, sessionCookieLines(rec.Header()), 1)
@@ -77,7 +77,7 @@ func TestUserHandlerCSRF(t *testing.T) {
 }
 
 func BenchmarkUserHandler(b *testing.B) {
-	fe := &Frontend{cfg: defaultConfig(), aead: newGCMAEAD(b), now: time.Now, cop: http.NewCrossOriginProtection()}
+	fe := &Frontend{rp: &relyingParty{cfg: defaultConfig(), aead: newGCMAEAD(b), now: time.Now, cop: http.NewCrossOriginProtection(), cookie: sessionCookie}}
 	idp := oidctest.NewServer(oidctest.Options{})
 	b.Cleanup(idp.Close)
 	s := newSession(time.Now())
@@ -87,7 +87,7 @@ func BenchmarkUserHandler(b *testing.B) {
 	})
 	s.AccessToken = "access-token"
 	h := make(http.Header)
-	require.NoError(b, fe.writeSession(b.Context(), h, s, sessionState{}))
+	require.NoError(b, fe.rp.writeSession(b.Context(), h, s, sessionState{}))
 	cookies := requestCookies(b, h)
 
 	f := fox.MustRouter()

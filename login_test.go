@@ -28,12 +28,12 @@ type testEnv struct {
 	router *fox.Router
 }
 
-func newTestEnv(t testing.TB, opts oidctest.Options, feOpts ...Option) *testEnv {
+func newTestEnv(t testing.TB, opts oidctest.Options, feOpts ...FrontendOption) *testEnv {
 	t.Helper()
 	return newTestEnvWithClient(t, opts, func(*Client) {}, feOpts...)
 }
 
-func newTestEnvWithClient(t testing.TB, opts oidctest.Options, client func(*Client), feOpts ...Option) *testEnv {
+func newTestEnvWithClient(t testing.TB, opts oidctest.Options, client func(*Client), feOpts ...FrontendOption) *testEnv {
 	t.Helper()
 	if opts.Subject == "" {
 		opts.Subject = "alice"
@@ -154,8 +154,8 @@ func TestLoginPushedAuthorizationFailure(t *testing.T) {
 		name   string
 		update func(e *testEnv)
 	}{
-		{name: "not found", update: func(e *testEnv) { e.fe.parEndpoint = e.idp.URL + "/missing" }},
-		{name: "invalid client", update: func(e *testEnv) { e.fe.auth.secret = "other" }},
+		{name: "not found", update: func(e *testEnv) { e.fe.rp.parEndpoint = e.idp.URL + "/missing" }},
+		{name: "invalid client", update: func(e *testEnv) { e.fe.rp.auth.secret = "other" }},
 		{name: "unreachable", update: func(e *testEnv) { e.idp.Close() }},
 	}
 	for _, tc := range cases {
@@ -171,7 +171,7 @@ func TestLoginPushedAuthorizationFailure(t *testing.T) {
 
 func TestCallback(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
-		var opts []Option
+		var opts []FrontendOption
 		if stateful {
 			opts = append(opts, WithStore(&mapStore{records: make(map[string]store.Record)}))
 		}
@@ -183,7 +183,7 @@ func TestCallback(t *testing.T) {
 		assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 		assert.Contains(t, rec.Header().Values("Set-Cookie")[0], "Max-Age=0; HttpOnly; Secure; SameSite=Lax")
 
-		s, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+		s, _, err := e.fe.rp.readSession(t.Context(), requestCookies(t, rec.Header()))
 		require.NoError(t, err)
 		assert.Equal(t, "alice", s.Subject)
 		assert.Equal(t, "s1", s.SID)
@@ -212,9 +212,9 @@ func TestCallbackReplacesSession(t *testing.T) {
 	require.Equal(t, http.StatusFound, second.Code)
 	assert.Len(t, ms.records, 1)
 
-	_, _, err := e.fe.readSession(t.Context(), first)
+	_, _, err := e.fe.rp.readSession(t.Context(), first)
 	assert.ErrorIs(t, err, errNoSession)
-	_, _, err = e.fe.readSession(t.Context(), requestCookies(t, second.Header()))
+	_, _, err = e.fe.rp.readSession(t.Context(), requestCookies(t, second.Header()))
 	assert.NoError(t, err)
 }
 
@@ -348,7 +348,7 @@ func TestCallbackInvalid(t *testing.T) {
 	t.Run("expired login", func(t *testing.T) {
 		e := newTestEnv(t, oidctest.Options{})
 		rec, callback := e.startLogin(t, "")
-		e.fe.now = func() time.Time { return time.Now().Add(loginTimeout + time.Minute) }
+		e.fe.rp.now = func() time.Time { return time.Now().Add(loginTimeout + time.Minute) }
 		res := e.serve(callback, requestCookies(t, rec.Header()))
 		assert.Equal(t, http.StatusBadRequest, res.Code)
 		assert.Contains(t, res.Header().Get("Set-Cookie"), "Max-Age=0")
@@ -382,7 +382,7 @@ func TestCallbackInvalid(t *testing.T) {
 
 	t.Run("missing iss", func(t *testing.T) {
 		e := newTestEnv(t, oidctest.Options{})
-		e.fe.provider.issParameter = true
+		e.fe.rp.provider.issParameter = true
 		assert.Equal(t, http.StatusBadRequest, e.login(t, "", nil).Code)
 	})
 
@@ -399,7 +399,7 @@ func TestCallbackUserInfo(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{UserInfo: map[string]any{"email": "alice@example.com"}}, WithUserInfo(true))
 	rec := e.login(t, "", nil)
 	require.Equal(t, http.StatusFound, rec.Code)
-	s, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+	s, _, err := e.fe.rp.readSession(t.Context(), requestCookies(t, rec.Header()))
 	require.NoError(t, err)
 	var info map[string]any
 	require.NoError(t, json.Unmarshal(s.UserInfo, &info))
@@ -441,7 +441,7 @@ func TestCallbackReloginWithStaleChunks(t *testing.T) {
 	require.Len(t, sessionCookieLines(rec.Header()), 1)
 
 	jar := append(fresh, old[1:]...)
-	s, st, err := e.fe.readSession(t.Context(), jar)
+	s, st, err := e.fe.rp.readSession(t.Context(), jar)
 	require.NoError(t, err)
 	assert.Equal(t, "alice", s.Subject)
 	assert.Equal(t, len(old), st.chunks)
@@ -508,7 +508,7 @@ func TestLoginPendingLimit(t *testing.T) {
 	var cookies []*http.Cookie
 	var callbacks []string
 	for i := range maxPendingLogins + 1 {
-		e.fe.now = func() time.Time { return start.Add(time.Duration(i) * time.Second) }
+		e.fe.rp.now = func() time.Time { return start.Add(time.Duration(i) * time.Second) }
 		rec := e.serve("/bff/login", cookies)
 		require.Equal(t, http.StatusFound, rec.Code)
 		cookies = applySetCookies(t, cookies, rec.Header())

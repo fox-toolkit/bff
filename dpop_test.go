@@ -57,11 +57,11 @@ func TestLoginDPoP(t *testing.T) {
 	cases := []struct {
 		name string
 		opts oidctest.Options
-		fe   []Option
+		fe   []FrontendOption
 	}{
 		{name: "front channel"},
 		{name: "pushed authorization", opts: oidctest.Options{PAR: true}},
-		{name: "userinfo", fe: []Option{WithUserInfo(true)}},
+		{name: "userinfo", fe: []FrontendOption{WithUserInfo(true)}},
 		{name: "nonce", opts: oidctest.Options{DPoPNonce: "n1"}},
 	}
 	for _, tc := range cases {
@@ -76,7 +76,7 @@ func TestLoginDPoP(t *testing.T) {
 
 			res := e.serve(callback, requestCookies(t, rec.Header()))
 			require.Equal(t, http.StatusFound, res.Code)
-			s, _, err := e.fe.readSession(t.Context(), requestCookies(t, res.Header()))
+			s, _, err := e.fe.rp.readSession(t.Context(), requestCookies(t, res.Header()))
 			require.NoError(t, err)
 			assert.Equal(t, "DPoP", s.TokenType)
 			key, err := parseDPoPKey(s.DPoPKey)
@@ -96,7 +96,7 @@ func TestLoginDPoPNotBound(t *testing.T) {
 func TestLoginDPoPWithoutKey(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{})
 	rec, callback := e.startLogin(t, "")
-	e.fe.cfg.dpop = true
+	e.fe.rp.cfg.dpop = true
 	assert.Equal(t, http.StatusBadRequest, e.serve(callback, requestCookies(t, rec.Header())).Code)
 }
 
@@ -104,7 +104,7 @@ func TestRefreshDPoP(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, DPoPNonce: "n1"}, WithDPoP(true))
 	got := e.mount(t, "/api")
 	cookies := e.loggedIn(t)
-	before, _, err := e.fe.readSession(t.Context(), cookies)
+	before, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	e.skipAhead(20 * time.Second)
@@ -161,7 +161,7 @@ func TestTransportDPoP(t *testing.T) {
 	_, err = e.router.Add(fox.MethodAny, "/api/*{any}", fox.WrapH(proxy), fox.WithMiddleware(e.fe.Authenticate()))
 	require.NoError(t, err)
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 	key, err := parseDPoPKey(s.DPoPKey)
 	require.NoError(t, err)
@@ -241,7 +241,7 @@ func TestMiddlewareDPoPMismatch(t *testing.T) {
 		for _, stateful := range []bool{false, true} {
 			t.Run(fmt.Sprintf("dpop=%t/stateful=%t", dpop, stateful), func(t *testing.T) {
 				ms := &mapStore{records: make(map[string]store.Record)}
-				opts := []Option{WithDPoP(dpop)}
+				opts := []FrontendOption{WithDPoP(dpop)}
 				if stateful {
 					opts = append(opts, WithStore(ms))
 				}
@@ -249,7 +249,7 @@ func TestMiddlewareDPoPMismatch(t *testing.T) {
 				e.mount(t, "/api")
 				cookies := e.loggedIn(t)
 
-				e.fe.cfg.dpop = !dpop
+				e.fe.rp.cfg.dpop = !dpop
 				rec := e.do(http.MethodGet, "/api", cookies, nil)
 				assert.Equal(t, http.StatusUnauthorized, rec.Code)
 				lines := sessionCookieLines(rec.Header())

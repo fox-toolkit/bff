@@ -19,15 +19,15 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func BenchmarkMiddleware(b *testing.B) {
+func BenchmarkFrontend(b *testing.B) {
 	for _, tc := range []struct {
 		name      string
-		opts      []Option
+		opts      []FrontendOption
 		resources []string
 	}{
 		{name: "stateless"},
-		{name: "stateful", opts: []Option{WithStore(memory.NewStore())}},
-		{name: "stateless resource", opts: []Option{WithResources(billing)}, resources: []string{billing}},
+		{name: "stateful", opts: []FrontendOption{WithStore(memory.NewStore())}},
+		{name: "stateless resource", opts: []FrontendOption{WithResources(billing)}, resources: []string{billing}},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			e := newTestEnv(b, oidctest.Options{AccessTokenTTL: 24 * time.Hour}, tc.opts...)
@@ -61,6 +61,47 @@ func BenchmarkMiddleware(b *testing.B) {
 	}
 }
 
+func BenchmarkProxy(b *testing.B) {
+	claims := map[string]any{"email": "alice@example.com", "groups": []any{"dev", "ops"}}
+	rules := []ProxyOption{
+		WithAccessRule(Group("dev")),
+		WithIdentityHeader("X-Auth-Request-Email", "email"),
+		WithIdentityHeader("X-Auth-Request-Groups", "groups"),
+	}
+	for _, tc := range []struct {
+		name string
+		opts []ProxyOption
+		idp  oidctest.Options
+	}{
+		{name: "stateless"},
+		{name: "stateless rules", opts: rules, idp: oidctest.Options{Claims: claims}},
+		{name: "stateless rules userinfo", opts: append([]ProxyOption{WithUserInfo(true)}, rules...), idp: oidctest.Options{UserInfo: claims}},
+		{name: "stateful", opts: []ProxyOption{WithStore(memory.NewStore())}},
+		{name: "stateful rules", opts: append([]ProxyOption{WithStore(memory.NewStore())}, rules...), idp: oidctest.Options{Claims: claims}},
+		{name: "stateful rules userinfo", opts: append([]ProxyOption{WithStore(memory.NewStore()), WithUserInfo(true)}, rules...), idp: oidctest.Options{UserInfo: claims}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			tc.idp.AccessTokenTTL = 24 * time.Hour
+			e := newProxyEnv(b, tc.idp, tc.opts...)
+			_, err := e.router.Add(fox.MethodGet, "/api", func(c *fox.Context) {
+				c.Writer().WriteHeader(http.StatusOK)
+			}, fox.WithMiddleware(e.p.Authenticate()))
+			require.NoError(b, err)
+
+			req, err := http.NewRequest(http.MethodGet, appOrigin+"/api", nil)
+			require.NoError(b, err)
+			for _, c := range e.loggedIn(b) {
+				req.AddCookie(c)
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				e.router.ServeHTTP(new(discardWriter), req)
+			}
+		})
+	}
+}
+
 func BenchmarkWriteSession(b *testing.B) {
 	resources := []string{"https://a.example.com/", "https://b.example.com/", "https://c.example.com/"}
 	for _, n := range []int{0, len(resources)} {
@@ -75,7 +116,7 @@ func BenchmarkWriteSession(b *testing.B) {
 			}
 			b.ReportAllocs()
 			for b.Loop() {
-				if err := fe.writeSession(b.Context(), make(http.Header), s, sessionState{}); err != nil {
+				if err := fe.rp.writeSession(b.Context(), make(http.Header), s, sessionState{}); err != nil {
 					b.Fatal(err)
 				}
 			}

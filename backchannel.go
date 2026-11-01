@@ -26,7 +26,11 @@ var errInvalidLogoutToken = errors.New("invalid logout token")
 // BackchannelHandler returns a handler that ends the sessions designated by a logout token, as defined by OpenID
 // Connect Back-Channel Logout. The provider must call it with a POST request. It panics if the frontend has no store.
 func (fe *Frontend) BackchannelHandler() fox.HandlerFunc {
-	if fe.cfg.store == nil {
+	return fe.rp.backchannelHandler()
+}
+
+func (rp *relyingParty) backchannelHandler() fox.HandlerFunc {
+	if rp.cfg.store == nil {
 		panic("bff: back-channel logout requires a store")
 	}
 	return func(c *fox.Context) {
@@ -37,19 +41,19 @@ func (fe *Frontend) BackchannelHandler() fox.HandlerFunc {
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxBackchannelBody)
 		if err := r.ParseForm(); err != nil {
-			fe.logRejected(r, "invalid back-channel logout", err)
+			rp.logRejected(r, "invalid back-channel logout", err)
 			badRequest(w)
 			return
 		}
-		subject, sid, err := fe.verifyLogoutToken(r.Context(), r.PostForm.Get("logout_token"))
+		subject, sid, err := rp.verifyLogoutToken(r.Context(), r.PostForm.Get("logout_token"))
 		if err != nil {
-			fe.logRejected(r, "invalid back-channel logout", err)
+			rp.logRejected(r, "invalid back-channel logout", err)
 			badRequest(w)
 			return
 		}
 
-		if err := fe.deleteSessionsBy(r.Context(), subject, sid); err != nil {
-			fe.logFailed(r, "session store", err)
+		if err := rp.deleteSessionsBy(r.Context(), subject, sid); err != nil {
+			rp.logFailed(r, "session store", err)
 			internalError(w)
 			return
 		}
@@ -59,12 +63,12 @@ func (fe *Frontend) BackchannelHandler() fox.HandlerFunc {
 
 // verifyLogoutToken validates the logout token as defined by Back-Channel Logout 2.6 and returns its subject and
 // provider session ID, one of which may be empty.
-func (fe *Frontend) verifyLogoutToken(ctx context.Context, raw string) (string, string, error) {
+func (rp *relyingParty) verifyLogoutToken(ctx context.Context, raw string) (string, string, error) {
 	if raw == "" {
 		return "", "", fmt.Errorf("%w: missing", errInvalidLogoutToken)
 	}
 	// Steps 2 to 4: signature, algorithm, iss, aud and exp are validated as for an ID token.
-	token, err := fe.logoutVerifier.Verify(ctx, raw)
+	token, err := rp.logoutVerifier.Verify(ctx, raw)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
 	}
@@ -79,7 +83,7 @@ func (fe *Frontend) verifyLogoutToken(ctx context.Context, raw string) (string, 
 		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
 	}
 	// Step 4: additional audiences require azp, as for an ID token.
-	if err := fe.checkAudience(token.Audience, claims.AZP); err != nil {
+	if err := rp.checkAudience(token.Audience, claims.AZP); err != nil {
 		return "", "", fmt.Errorf("%w: %w", errInvalidLogoutToken, err)
 	}
 	// Step 5: a sub claim, a sid claim, or both.

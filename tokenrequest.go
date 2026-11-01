@@ -33,8 +33,8 @@ func (e *tokenError) Error() string {
 
 // requestToken sends the token request to the provider with the client, and returns the token of a successful response
 // (RFC 6749 5.1) with its other members as extra values.
-func (fe *Frontend) requestToken(ctx context.Context, client *http.Client, form url.Values) (*oauth2.Token, error) {
-	req, err := fe.auth.newRequest(ctx, fe.oauth2.Endpoint.TokenURL, form, fe.now)
+func (rp *relyingParty) requestToken(ctx context.Context, client *http.Client, form url.Values) (*oauth2.Token, error) {
+	req, err := rp.auth.newRequest(ctx, rp.oauth2.Endpoint.TokenURL, form, rp.now)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (fe *Frontend) requestToken(ctx context.Context, client *http.Client, form 
 	token := &oauth2.Token{AccessToken: res.AccessToken, TokenType: res.TokenType, RefreshToken: res.RefreshToken}
 	if n, err := res.ExpiresIn.Int64(); err == nil && n > 0 {
 		n = min(n, math.MaxInt32)
-		token.Expiry = fe.now().Add(time.Duration(n) * time.Second)
+		token.Expiry = rp.now().Add(time.Duration(n) * time.Second)
 	}
 	return token.WithExtra(extra), nil
 }

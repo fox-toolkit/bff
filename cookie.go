@@ -14,7 +14,12 @@ import (
 )
 
 const (
-	cookiePrefix = "__Host-Http-"
+	cookiePrefix   = "__Host-Http-"
+	frontendCookie = cookiePrefix + "BFF"
+	proxyCookie    = cookiePrefix + "Proxy"
+	// sharedCookie is the session cookie of a [Proxy] with a cookie domain. The __Host- prefix forbids the Domain
+	// attribute.
+	sharedCookie = "__Http-Proxy"
 	// maxChunkSize is the maximum length of a cookie value. It leaves room for the name and attributes within the
 	// 4096 bytes that browsers accept for a cookie.
 	maxChunkSize = 3800
@@ -31,16 +36,21 @@ var (
 type cookieSpec struct {
 	name     string
 	purpose  string
+	domain   string
 	sameSite http.SameSite
 }
 
-// sessionCookie is only sent on same-site requests.
-var sessionCookie = cookieSpec{name: cookiePrefix + "BFF", purpose: "session", sameSite: http.SameSiteStrictMode}
+// sessionCookie is the session cookie of a [Frontend]. It is only sent on same-site requests.
+var sessionCookie = cookieSpec{name: frontendCookie, purpose: "session", sameSite: http.SameSiteStrictMode}
 
-// loginCookie contains the state of one login flow. It must be sent on the cross-site navigation from the provider to
-// the callback, hence the lax mode.
-func loginCookie(id string) cookieSpec {
-	return cookieSpec{name: cookiePrefix + "BFF-Login-" + id, purpose: "login", sameSite: http.SameSiteLaxMode}
+// proxySessionCookie is the session cookie of a [Proxy]. It must be sent on the cross-site navigations to the
+// upstream, such as a link from another site or the redirect from the callback after the login, hence the lax mode.
+var proxySessionCookie = cookieSpec{name: proxyCookie, purpose: "session", sameSite: http.SameSiteLaxMode}
+
+// loginCookie contains the state of one login flow, for the session cookie. It must be sent on the cross-site
+// navigation from the provider to the callback, hence the lax mode.
+func loginCookie(session cookieSpec, id string) cookieSpec {
+	return cookieSpec{name: session.name + "-Login-" + id, purpose: "login", domain: session.domain, sameSite: http.SameSiteLaxMode}
 }
 
 func (s cookieSpec) associatedData() []byte {
@@ -128,6 +138,7 @@ func (s cookieSpec) cookie(i int, value string, maxAge int) string {
 		Name:     s.name + "." + strconv.Itoa(i),
 		Value:    value,
 		Path:     "/",
+		Domain:   s.domain,
 		MaxAge:   maxAge,
 		Secure:   true,
 		HttpOnly: true,

@@ -32,14 +32,41 @@ const (
 	DefaultAbsoluteTimeout = 8 * time.Hour
 )
 
-// Option configures a [Frontend].
+// FrontendOption configures a [Frontend].
+type FrontendOption interface {
+	applyFrontend(*config) error
+}
+
+// ProxyOption configures a [Proxy].
+type ProxyOption interface {
+	applyProxy(*config) error
+}
+
+// Option configures a [Frontend] or a [Proxy].
 type Option interface {
-	apply(*config) error
+	FrontendOption
+	ProxyOption
 }
 
 type optionFunc func(*config) error
 
-func (f optionFunc) apply(c *config) error {
+func (f optionFunc) applyFrontend(c *config) error {
+	return f(c)
+}
+
+func (f optionFunc) applyProxy(c *config) error {
+	return f(c)
+}
+
+type frontendOptionFunc func(*config) error
+
+func (f frontendOptionFunc) applyFrontend(c *config) error {
+	return f(c)
+}
+
+type proxyOptionFunc func(*config) error
+
+func (f proxyOptionFunc) applyProxy(c *config) error {
 	return f(c)
 }
 
@@ -49,9 +76,12 @@ type config struct {
 	unauthorized    fox.HandlerFunc
 	csrfHeader      string
 	csrfValue       string
+	cookieDomain    string
 	signingAlgs     []string
 	resources       []string
 	trustedOrigins  []string
+	identityHeaders []identityHeader
+	rules           []Rule
 	idleTimeout     time.Duration
 	absoluteTimeout time.Duration
 	userInfo        bool
@@ -70,7 +100,8 @@ func defaultConfig() *config {
 }
 
 // WithStore enables stateful sessions, stored in s. The session cookie then contains only the session ID. By default,
-// sessions are stateless and stored in the cookie. [Frontend.BackchannelHandler] requires a store.
+// sessions are stateless and stored in the cookie. [Frontend.BackchannelHandler] and [Proxy.BackchannelHandler] require
+// a store.
 func WithStore(s store.Store) Option {
 	return optionFunc(func(c *config) error {
 		if s == nil {
@@ -115,8 +146,8 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 	})
 }
 
-// WithUserInfo requests the UserInfo endpoint at login and adds its claims to the claims returned by
-// [Frontend.UserHandler] and [UserClaims].
+// WithUserInfo requests the UserInfo endpoint at login and after each refresh, and adds its claims to the claims of the
+// user, such as the ones returned by [UserClaims].
 func WithUserInfo(enable bool) Option {
 	return optionFunc(func(c *config) error {
 		c.userInfo = enable
@@ -187,8 +218,8 @@ var signingAlgs = []string{
 // https://bff.example.com, as the session cookie is SameSite=Strict. [NewFrontend] fails if an origin is not same site
 // with the redirect URL of the client. A CORS middleware must allow only these origins, with credentials. The BFF
 // should also require the header of [WithCSRFHeader], as recommended by RFC 10017.
-func WithTrustedOrigins(origins ...string) Option {
-	return optionFunc(func(c *config) error {
+func WithTrustedOrigins(origins ...string) FrontendOption {
+	return frontendOptionFunc(func(c *config) error {
 		for _, origin := range origins {
 			if !validOrigin(origin) {
 				return fmt.Errorf("%w: invalid trusted origin %q", ErrInvalidConfig, origin)
@@ -233,19 +264,19 @@ func sameSite(origin, u *url.URL) bool {
 	return siteA == siteB
 }
 
-// PushedAuthorization defines when a [Frontend] pushes its authorization requests to the provider, as defined by
-// RFC 9126.
+// PushedAuthorization defines when a [Frontend] or a [Proxy] pushes its authorization requests to the provider, as
+// defined by RFC 9126.
 type PushedAuthorization uint8
 
 const (
 	// PushedAuthorizationIfAvailable pushes the authorization requests when the provider has a pushed authorization
 	// request endpoint.
 	PushedAuthorizationIfAvailable PushedAuthorization = iota
-	// PushedAuthorizationRequired pushes the authorization requests. [NewFrontend] fails if the provider has no pushed
-	// authorization request endpoint.
+	// PushedAuthorizationRequired pushes the authorization requests. [NewFrontend] and [NewProxy] fail if the provider
+	// has no pushed authorization request endpoint.
 	PushedAuthorizationRequired
-	// PushedAuthorizationDisabled never pushes the authorization requests. [NewFrontend] fails if the provider requires
-	// pushed authorization requests.
+	// PushedAuthorizationDisabled never pushes the authorization requests. [NewFrontend] and [NewProxy] fail if the
+	// provider requires pushed authorization requests.
 	PushedAuthorizationDisabled
 )
 
@@ -262,8 +293,8 @@ func WithPushedAuthorization(mode PushedAuthorization) Option {
 }
 
 // WithRequestObject sends the authorization parameters in a request object signed with the client key, as defined
-// by RFC 9101. [NewFrontend] fails if the client has no key or if the authorization requests are not pushed to the
-// provider. It also fails if the provider requires request objects and this option is disabled.
+// by RFC 9101. [NewFrontend] and [NewProxy] fail if the client has no key or if the authorization requests are not
+// pushed to the provider. They also fail if the provider requires request objects and this option is disabled.
 func WithRequestObject(enable bool) Option {
 	return optionFunc(func(c *config) error {
 		c.requestObject = enable
@@ -274,8 +305,8 @@ func WithRequestObject(enable bool) Option {
 // WithCSRFHeader requires the header with the given value on the requests handled by [Frontend.Authenticate] and
 // [Frontend.UserHandler]. A browser sends a cross-origin request with a custom header only after a CORS preflight,
 // which prevents cross-site request forgery (RFC 10017, Section 6.1.3.3.2).
-func WithCSRFHeader(name, value string) Option {
-	return optionFunc(func(c *config) error {
+func WithCSRFHeader(name, value string) FrontendOption {
+	return frontendOptionFunc(func(c *config) error {
 		if !httpguts.ValidHeaderFieldName(name) {
 			return fmt.Errorf("%w: invalid csrf header name", ErrInvalidConfig)
 		}
@@ -288,8 +319,8 @@ func WithCSRFHeader(name, value string) Option {
 	})
 }
 
-// WithUnauthorizedHandler sets the handler called for the requests without a valid session. The default is
-// [DefaultUnauthorized].
+// WithUnauthorizedHandler sets the handler called for the requests without a valid session. A [Proxy] calls it only
+// for the requests that are not navigations. The default is [DefaultUnauthorized].
 func WithUnauthorizedHandler(handler fox.HandlerFunc) Option {
 	return optionFunc(func(c *config) error {
 		if handler == nil {
@@ -303,4 +334,70 @@ func WithUnauthorizedHandler(handler fox.HandlerFunc) Option {
 // DefaultUnauthorized responds with 401 Unauthorized.
 func DefaultUnauthorized(c *fox.Context) {
 	http.Error(c.Writer(), http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+}
+
+type identityHeader struct {
+	name  string
+	claim string
+}
+
+// WithIdentityHeader sets the header of the given name on the requests passed to the next handler of
+// [Proxy.Authenticate], with the value of a claim of the user. A string claim is sent as is, a number or a boolean is
+// formatted as in JSON, and an array of strings is joined with commas. The header is omitted when the request has no
+// session, when the claim has another type and when its value has characters invalid in a header. The middleware
+// always removes the header from the incoming request, including its form with underscores in place of dashes.
+func WithIdentityHeader(name, claim string) ProxyOption {
+	return proxyOptionFunc(func(c *config) error {
+		if !httpguts.ValidHeaderFieldName(name) {
+			return fmt.Errorf("%w: invalid identity header name", ErrInvalidConfig)
+		}
+		if claim == "" {
+			return fmt.Errorf("%w: empty identity header claim", ErrInvalidConfig)
+		}
+		name = http.CanonicalHeaderKey(name)
+		for _, h := range c.identityHeaders {
+			if headerName(h.name) == headerName(name) {
+				return fmt.Errorf("%w: duplicate identity header %q", ErrInvalidConfig, name)
+			}
+		}
+		c.identityHeaders = append(c.identityHeaders, identityHeader{name: name, claim: claim})
+		return nil
+	})
+}
+
+// WithAccessRule requires the rule to grant access to the user, at login and on each request handled by
+// [Proxy.Authenticate]. The rules of several calls must all grant access.
+func WithAccessRule(rule Rule) ProxyOption {
+	return proxyOptionFunc(func(c *config) error {
+		if rule == nil {
+			return fmt.Errorf("%w: nil access rule", ErrInvalidConfig)
+		}
+		c.rules = append(c.rules, rule)
+		return nil
+	})
+}
+
+// WithCookieDomain shares the sessions of the proxy between the hosts of the domain, such as apps.example.com for
+// app1.apps.example.com and app2.apps.example.com. The login completes on the host of the redirect URL, which must be
+// in the domain. [NewProxy] fails if the domain is a public suffix. The proxy responds with 500 Internal Server Error to
+// a request for a host outside the domain.
+func WithCookieDomain(domain string) ProxyOption {
+	return proxyOptionFunc(func(c *config) error {
+		d, err := idna.Lookup.ToASCII(domain)
+		if err == nil {
+			// EffectiveTLDPlusOne also rejects an IP address and an empty label.
+			_, err = publicsuffix.EffectiveTLDPlusOne(d)
+		}
+		if err != nil {
+			return fmt.Errorf("%w: invalid cookie domain %q", ErrInvalidConfig, domain)
+		}
+		c.cookieDomain = d
+		return nil
+	})
+}
+
+// inDomain reports whether the host is the domain or one of its subdomains.
+func inDomain(host, domain string) bool {
+	host = strings.ToLower(host)
+	return host == domain || strings.HasSuffix(host, "."+domain)
 }

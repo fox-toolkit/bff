@@ -35,23 +35,24 @@ type userResponse struct {
 // seconds before the session ends. The application calls it from JavaScript, with the header of [WithCSRFHeader] when
 // this option is set. A request without a session gets the response of the unauthorized handler.
 func (fe *Frontend) UserHandler() fox.HandlerFunc {
+	rp := fe.rp
 	return func(c *fox.Context) {
 		r := c.Request()
 		w := c.Writer()
 		w.Header().Set("Cache-Control", "no-store")
-		if err := fe.checkCSRF(r); err != nil {
-			fe.logRejected(r, "cross-site request", err)
+		if err := rp.checkCSRF(r); err != nil {
+			rp.logRejected(r, "cross-site request", err)
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
 
-		s, err := fe.currentSession(r, w.Header(), nil)
+		s, err := rp.currentSession(r, w.Header(), nil)
 		if err != nil {
-			fe.sessionError(w, r, err)
+			rp.sessionError(w, r, err)
 			return
 		}
 		if s == nil {
-			fe.cfg.unauthorized(c)
+			rp.cfg.unauthorized(c)
 			return
 		}
 
@@ -63,7 +64,7 @@ func (fe *Frontend) UserHandler() fox.HandlerFunc {
 		body, err := json.Marshal(userResponse{
 			Claims:          claims,
 			LogoutCSRFToken: s.LogoutCSRFToken,
-			ExpiresIn:       int64(s.expires(fe.cfg).Sub(fe.now()) / time.Second),
+			ExpiresIn:       int64(s.expires(rp.cfg).Sub(rp.now()) / time.Second),
 		})
 		if err != nil {
 			internalError(w)

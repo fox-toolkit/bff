@@ -39,7 +39,7 @@ func TestLogout(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{}, WithStore(ms))
 	e.mountLogout(t)
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	rec := e.do(http.MethodGet, "/bff/logout?csrf_token="+s.LogoutCSRFToken, cookies, nil)
@@ -57,6 +57,23 @@ func TestLogout(t *testing.T) {
 		"id_token_hint":            {s.IDToken},
 		"post_logout_redirect_uri": {appOrigin + "/"},
 	}, loc.Query())
+}
+
+func TestLogoutSpeculative(t *testing.T) {
+	ms := &mapStore{records: make(map[string]store.Record)}
+	e := newTestEnv(t, oidctest.Options{}, WithStore(ms))
+	e.mountLogout(t)
+	cookies := e.loggedIn(t)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
+	require.NoError(t, err)
+
+	for _, purpose := range []string{"prefetch", "prefetch;prerender"} {
+		rec := e.do(http.MethodGet, "/bff/logout?csrf_token="+s.LogoutCSRFToken, cookies, http.Header{"Sec-Purpose": {purpose}})
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+		assert.Empty(t, rec.Header().Values("Set-Cookie"))
+	}
+	assert.Len(t, ms.records, 1)
+	assert.Empty(t, e.idp.Revoked())
 }
 
 func (e *testEnv) doForm(method, target string, cookies []*http.Cookie, header http.Header, form url.Values) *httptest.ResponseRecorder {
@@ -106,7 +123,7 @@ func TestLogoutMethods(t *testing.T) {
 			e := newTestEnv(t, oidctest.Options{}, WithCSRFHeader("X-CSRF", "1"))
 			e.mountLogout(t)
 			cookies := e.loggedIn(t)
-			s, _, err := e.fe.readSession(t.Context(), cookies)
+			s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 			require.NoError(t, err)
 
 			target := "/bff/logout"
@@ -142,7 +159,7 @@ func TestLogoutWithoutProviderEndpoints(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{Metadata: map[string]any{"end_session_endpoint": nil, "revocation_endpoint": nil}})
 	e.mountLogout(t)
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 	rec := e.doForm(http.MethodPost, "/bff/logout", cookies, nil, url.Values{"csrf_token": {s.LogoutCSRFToken}})
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
@@ -161,7 +178,7 @@ func TestLogoutWithProviderEndpointOptions(t *testing.T) {
 	})
 	e.mountLogout(t)
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	rec := e.doForm(http.MethodPost, "/bff/logout", cookies, nil, url.Values{"csrf_token": {s.LogoutCSRFToken}})
@@ -189,7 +206,7 @@ func TestLogoutStoreError(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{}, WithStore(fs))
 	e.mountLogout(t)
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	fs.fail = true
@@ -209,7 +226,7 @@ func TestLogoutForgetsTokens(t *testing.T) {
 	rec := e.do(http.MethodGet, "/r1", old, nil)
 	require.True(t, <-found)
 	latest := requestCookies(t, rec.Header())
-	s, _, err := e.fe.readSession(t.Context(), latest)
+	s, _, err := e.fe.rp.readSession(t.Context(), latest)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusSeeOther, e.do(http.MethodGet, "/bff/logout?csrf_token="+s.LogoutCSRFToken, latest, nil).Code)
 	refreshes := e.idp.Refreshes()
@@ -228,7 +245,7 @@ func TestLogoutStaleCookie(t *testing.T) {
 
 	rec := e.do(http.MethodGet, "/r1", old, nil)
 	require.True(t, <-found)
-	latest, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+	latest, _, err := e.fe.rp.readSession(t.Context(), requestCookies(t, rec.Header()))
 	require.NoError(t, err)
 
 	require.Equal(t, http.StatusSeeOther, e.do(http.MethodGet, "/bff/logout?csrf_token="+latest.LogoutCSRFToken, old, nil).Code)
@@ -256,9 +273,9 @@ func (e *testEnv) waitQueued(t *testing.T, id string, n int) {
 	t.Helper()
 	key := sha256.Sum256([]byte(id))
 	require.Eventually(t, func() bool {
-		e.fe.tokens.mu.Lock()
-		defer e.fe.tokens.mu.Unlock()
-		st := e.fe.tokens.sessions[key]
+		e.fe.rp.tokens.mu.Lock()
+		defer e.fe.rp.tokens.mu.Unlock()
+		st := e.fe.rp.tokens.sessions[key]
 		return st != nil && st.refs == n
 	}, time.Second, time.Millisecond)
 }
@@ -269,12 +286,12 @@ func TestLogoutDuringRefresh(t *testing.T) {
 	found := make(chan bool, 1)
 	e.mountResourceToken(t, "/r1", billing, found)
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	hr := &holdRefresh{base: client.Transport, started: make(chan struct{}), release: make(chan struct{})}
 	client.Transport = hr
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 	release := sync.OnceFunc(func() { close(hr.release) })
 	t.Cleanup(release)
 
@@ -298,7 +315,7 @@ func TestLogoutDuringRefresh(t *testing.T) {
 
 	rec := <-refreshed
 	require.True(t, <-found)
-	latest, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+	latest, _, err := e.fe.rp.readSession(t.Context(), requestCookies(t, rec.Header()))
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusSeeOther, (<-logout).Code)
 	assert.Equal(t, []string{latest.RefreshToken}, e.idp.Revoked())
@@ -309,13 +326,13 @@ func TestLogoutStoredByReplica(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{}, WithStore(ms))
 	e.mountLogout(t)
 	cookies := e.loggedIn(t)
-	s, st, err := e.fe.readSession(t.Context(), cookies)
+	s, st, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	held := make(chan struct{})
 	release := make(chan struct{})
 	go func() {
-		_ = e.fe.tokens.Do(t.Context(), s.LogoutCSRFToken, func(*session) (*session, error) {
+		_ = e.fe.rp.tokens.Do(t.Context(), s.LogoutCSRFToken, func(*session) (*session, error) {
 			close(held)
 			<-release
 			return nil, nil
@@ -328,7 +345,7 @@ func TestLogoutStoredByReplica(t *testing.T) {
 	replica := *s
 	replica.RefreshToken = "replica"
 	replica.Generation++
-	require.NoError(t, e.fe.writeSession(t.Context(), http.Header{}, &replica, st))
+	require.NoError(t, e.fe.rp.writeSession(t.Context(), http.Header{}, &replica, st))
 	close(release)
 
 	assert.Equal(t, http.StatusSeeOther, <-logout)
@@ -351,7 +368,7 @@ func TestRevocationRetry(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEnv(t, oidctest.Options{})
-			client := *e.fe.provider.client
+			client := *e.fe.rp.provider.client
 			base := client.Transport
 			var attempts atomic.Int32
 			client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -365,10 +382,10 @@ func TestRevocationRetry(t *testing.T) {
 				}
 				return base.RoundTrip(r)
 			})
-			e.fe.provider.client = &client
+			e.fe.rp.provider.client = &client
 
 			start := time.Now()
-			err := e.fe.revoke(t.Context(), "rt")
+			err := e.fe.rp.revoke(t.Context(), "rt")
 			assert.Less(t, time.Since(start), time.Second)
 			assert.Equal(t, tc.revoked, err == nil)
 			assert.Equal(t, tc.attempts, attempts.Load())

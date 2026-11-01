@@ -92,12 +92,12 @@ func TestPrivateKeyJWT(t *testing.T) {
 			cookies := e.loggedIn(t)
 			e.skipAhead(20 * time.Second)
 			require.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
-			require.NoError(t, e.fe.revoke(t.Context(), (*got)[0].state.session.RefreshToken))
+			require.NoError(t, e.fe.rp.revoke(t.Context(), (*got)[0].state.session.RefreshToken))
 
 			var paths []string
 			for _, a := range e.idp.Assertions() {
 				paths = append(paths, a.Path)
-				assert.Equal(t, e.fe.auth.alg, a.Alg)
+				assert.Equal(t, e.fe.rp.auth.alg, a.Alg)
 				assert.Equal(t, "k1", a.KeyID)
 			}
 			assert.Equal(t, []string{"/par", "/token", "/token", "/revoke"}, paths)
