@@ -1,6 +1,6 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
 // Package conformance runs the client test plans of the OpenID Foundation conformance suite against the BFF.
 package conformance
@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fox-toolkit/bff"
+	"github.com/fox-toolkit/rp"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -33,7 +33,7 @@ type plan struct {
 	storeOnly    bool
 	resourceOnly bool
 	noLogin      string // module that runs without login
-	options      func(module string) []bff.FrontendOption
+	options      func(module string) []rp.FrontendOption
 	run          func(b *browser, module string)
 }
 
@@ -42,7 +42,7 @@ var plans = []plan{
 	{
 		name:    "fapi2-message-signing",
 		key:     true,
-		options: func(m string) []bff.FrontendOption { return append(fapi2(m), bff.WithRequestObject(true)) },
+		options: func(m string) []rp.FrontendOption { return append(fapi2(m), rp.WithRequestObject(true)) },
 		run:     get("/api/open-banking/v1.1/accounts"),
 	},
 	{name: "oidcc-basic", options: userInfo},
@@ -54,29 +54,29 @@ var plans = []plan{
 		name:      "logout-backchannel",
 		storeOnly: true,
 		// The client registers no id_token_signed_response_alg, so RS256 is expected (OIDC Core 3.1.3.7).
-		options: func(m string) []bff.FrontendOption { return append(userInfo(m), bff.WithSigningAlgorithms("RS256")) },
+		options: func(m string) []rp.FrontendOption { return append(userInfo(m), rp.WithSigningAlgorithms("RS256")) },
 		run:     (*browser).logoutModule,
 	},
 	// The RP-initiated logout plan also sends back-channel logout requests, which require a store.
 	{name: "logout-rp-initiated", storeOnly: true, options: userInfo, run: (*browser).logoutModule},
 }
 
-func fapi2(string) []bff.FrontendOption {
-	return []bff.FrontendOption{
-		bff.WithPushedAuthorization(bff.PushedAuthorizationRequired),
-		bff.WithDPoP(true),
-		bff.WithSigningAlgorithms("PS256", "ES256", "EdDSA"),
+func fapi2(string) []rp.FrontendOption {
+	return []rp.FrontendOption{
+		rp.WithPushedAuthorization(rp.PushedAuthorizationRequired),
+		rp.WithDPoP(true),
+		rp.WithSigningAlgorithms("PS256", "ES256", "EdDSA"),
 	}
 }
 
-func userInfo(string) []bff.FrontendOption {
-	return []bff.FrontendOption{bff.WithUserInfo(true)}
+func userInfo(string) []rp.FrontendOption {
+	return []rp.FrontendOption{rp.WithUserInfo(true)}
 }
 
 // This module finishes when the client fetches the discovery, and fails on any later request.
 const discoveryModule = "oidcc-client-test-discovery-openid-config"
 
-func configOptions(module string) []bff.FrontendOption {
+func configOptions(module string) []rp.FrontendOption {
 	// This module finishes when the client fetches the key set, and fails on any later request.
 	if module == "oidcc-client-test-discovery-jwks-uri-keys" {
 		return nil
@@ -266,7 +266,7 @@ func (r *run) module(t *testing.T, plan, module string, variant json.RawMessage)
 		t.Fatal(err)
 	}
 	defer flow.Close()
-	log, err := os.Create(filepath.Join(dir, "bff.log"))
+	log, err := os.Create(filepath.Join(dir, "rp.log"))
 	if err != nil {
 		t.Fatal(err)
 	}

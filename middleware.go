@@ -1,8 +1,8 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 import (
 	"bufio"
@@ -22,6 +22,7 @@ import (
 var (
 	errProvider           = errors.New("provider unavailable")
 	errUndeclaredResource = errors.New("undeclared resource")
+	errFrontendRules      = errors.New("rules are not supported by a frontend")
 )
 
 type (
@@ -81,6 +82,11 @@ func (fe *Frontend) serve(c *fox.Context, next fox.HandlerFunc) {
 	}
 
 	route := c.Route()
+	if routeRules(route) != nil {
+		rp.logFailed(r, "route rules", errFrontendRules)
+		internalError(c.Writer())
+		return
+	}
 	s, resources, pending, ok := rp.authenticate(c, route)
 	if !ok {
 		return

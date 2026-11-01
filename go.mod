@@ -1,4 +1,4 @@
-module github.com/fox-toolkit/bff
+module github.com/fox-toolkit/rp
 
 go 1.26.0
 

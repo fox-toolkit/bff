@@ -1,6 +1,6 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
 package conformance
 
@@ -26,10 +26,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fox-toolkit/bff"
-	"github.com/fox-toolkit/bff/store/memory"
-	bffredis "github.com/fox-toolkit/bff/store/redis"
 	"github.com/fox-toolkit/fox"
+	"github.com/fox-toolkit/rp"
+	"github.com/fox-toolkit/rp/store/memory"
+	rpredis "github.com/fox-toolkit/rp/store/redis"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -55,13 +55,13 @@ type bffConfig struct {
 // startup, so it fails for a module that serves invalid metadata.
 func newBFF(cfg bffConfig) (http.Handler, error) {
 	logger := slog.NewTextHandler(cfg.log, &slog.HandlerOptions{Level: slog.LevelDebug})
-	provider, err := bff.NewProvider(context.Background(), cfg.issuer,
-		bff.WithHTTPClient(&http.Client{Timeout: 10 * time.Second, Transport: insecure}))
+	provider, err := rp.NewProvider(context.Background(), cfg.issuer,
+		rp.WithHTTPClient(&http.Client{Timeout: 10 * time.Second, Transport: insecure}))
 	if err != nil {
 		return nil, fmt.Errorf("provider: %w", err)
 	}
 
-	client := bff.Client{
+	client := rp.Client{
 		Provider:              provider,
 		ClientID:              cfg.clientID,
 		ClientSecret:          cfg.secret,
@@ -73,21 +73,21 @@ func newBFF(cfg bffConfig) (http.Handler, error) {
 		client.ClientKey = cfg.key
 		client.ClientKeyID = keyID(cfg.key)
 	}
-	opts := append(cfg.plan.options(cfg.module), bff.WithLogHandler(logger))
+	opts := append(cfg.plan.options(cfg.module), rp.WithLogHandler(logger))
 	switch cfg.setup.store {
 	case "memory":
-		opts = append(opts, bff.WithStore(memory.NewStore()))
+		opts = append(opts, rp.WithStore(memory.NewStore()))
 	case "redis":
-		s, err := bffredis.NewStore(cfg.redis, bffredis.WithKeyPrefix("bff-conformance:"+cfg.issuer+":"))
+		s, err := rpredis.NewStore(cfg.redis, rpredis.WithKeyPrefix("bff-conformance:"+cfg.issuer+":"))
 		if err != nil {
 			return nil, fmt.Errorf("redis: %w", err)
 		}
-		opts = append(opts, bff.WithStore(s))
+		opts = append(opts, rp.WithStore(s))
 	}
 	if cfg.setup.resource {
-		opts = append(opts, bff.WithResources(resource))
+		opts = append(opts, rp.WithResources(resource))
 	}
-	fe, err := bff.NewFrontend(client, newAEAD(), opts...)
+	fe, err := rp.NewFrontend(client, newAEAD(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("frontend: %w", err)
 	}
@@ -97,11 +97,11 @@ func newBFF(cfg bffConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := bff.Transport(insecure)
+	transport := rp.Transport(insecure)
 	apiOpts := []fox.RouteOption{fox.WithMiddleware(fe.Authenticate())}
 	if cfg.setup.resource {
-		transport = bff.ResourceTransport(insecure, resource)
-		apiOpts = append(apiOpts, bff.ForResource(resource))
+		transport = rp.ResourceTransport(insecure, resource)
+		apiOpts = append(apiOpts, rp.ForResource(resource))
 	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {

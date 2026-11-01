@@ -8,7 +8,7 @@
     "request_type": "plain_http_request"
   },
   "config": {
-    "description": "fox-toolkit/bff, OpenID Connect Core refresh token",
+    "description": "fox-toolkit/rp, OpenID Connect Core refresh token",
     "client": {
       "client_id": "bff-oidcc",
       "client_secret": "bff-oidcc-secret",

@@ -9,7 +9,7 @@
     "grant_management": "disabled"
   },
   "config": {
-    "description": "fox-toolkit/bff, FAPI 2.0 Security Profile",
+    "description": "fox-toolkit/rp, FAPI 2.0 Security Profile",
     "client": {
       "client_id": "bff-fapi2",
       "scope": "openid"

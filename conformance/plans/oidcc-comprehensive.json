@@ -8,7 +8,7 @@
     "client_registration": "static_client"
   },
   "config": {
-    "description": "fox-toolkit/bff, OpenID Connect Core comprehensive",
+    "description": "fox-toolkit/rp, OpenID Connect Core comprehensive",
     "client": {
       "client_id": "bff-oidcc",
       "client_secret": "bff-oidcc-comprehensive-secret-hs256"

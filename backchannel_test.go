@@ -1,8 +1,8 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 import (
 	"bytes"
@@ -20,9 +20,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/fox-toolkit/bff/internal/oidctest"
-	"github.com/fox-toolkit/bff/store"
 	"github.com/fox-toolkit/fox"
+	"github.com/fox-toolkit/rp/internal/oidctest"
+	"github.com/fox-toolkit/rp/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -179,7 +179,7 @@ func TestBackchannelUnknownKeyID(t *testing.T) {
 
 func TestBackchannelRequiresStore(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{})
-	assert.PanicsWithValue(t, "bff: back-channel logout requires a store", func() { e.fe.BackchannelHandler() })
+	assert.PanicsWithValue(t, "rp: back-channel logout requires a store", func() { e.fe.BackchannelHandler() })
 }
 
 func FuzzVerifyLogoutToken(f *testing.F) {

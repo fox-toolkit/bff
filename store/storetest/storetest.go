@@ -1,6 +1,6 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
 // Package storetest tests implementations of [store.Store].
 package storetest
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fox-toolkit/bff/store"
+	"github.com/fox-toolkit/rp/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

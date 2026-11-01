@@ -1,6 +1,6 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
 // Package oidctest provides an OpenID Connect provider for tests. It logs in every authorization request as the
 // configured user, unless the user is logged out and the request asks for prompt=none.

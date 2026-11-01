@@ -11,7 +11,7 @@
     "fapi_response_mode": "plain_response"
   },
   "config": {
-    "description": "fox-toolkit/bff, FAPI 2.0 Message Signing",
+    "description": "fox-toolkit/rp, FAPI 2.0 Message Signing",
     "client": {
       "client_id": "bff-fapi2",
       "scope": "openid"

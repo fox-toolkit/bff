@@ -1,8 +1,8 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 import (
 	"slices"
@@ -90,11 +90,12 @@ func lower(c byte) byte {
 }
 
 // Require returns a [fox.RouteOption] that lets [Proxy.Authenticate] respond with 403 Forbidden to a user who is not
-// granted access by all the rules, in addition to the rules of [WithAccessRule]. It panics if a rule is nil.
+// granted access by all the rules, in addition to the rules of [WithAccessRule]. [Frontend.Authenticate] responds with
+// 500 Internal Server Error to a route with rules. It panics if a rule is nil.
 func Require(rules ...Rule) fox.RouteOption {
 	for _, rule := range rules {
 		if rule == nil {
-			panic("bff: nil rule")
+			panic("rp: nil rule")
 		}
 	}
 	return fox.WithAnnotation(rulesKey{}, slices.Clone(rules))

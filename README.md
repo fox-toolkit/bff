@@ -1,15 +1,18 @@
-[![Go Reference](https://pkg.go.dev/badge/github.com/fox-toolkit/bff.svg)](https://pkg.go.dev/github.com/fox-toolkit/bff)
-[![tests](https://github.com/fox-toolkit/bff/actions/workflows/tests.yaml/badge.svg)](https://github.com/fox-toolkit/bff/actions?query=workflow%3Atests)
-[![codecov](https://codecov.io/gh/fox-toolkit/bff/graph/badge.svg?token=7M87P7Q31N)](https://codecov.io/gh/fox-toolkit/bff)
-![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/fox-toolkit/bff)
-![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/fox-toolkit/bff)
+[![Go Reference](https://pkg.go.dev/badge/github.com/fox-toolkit/rp.svg)](https://pkg.go.dev/github.com/fox-toolkit/rp)
+[![tests](https://github.com/fox-toolkit/rp/actions/workflows/tests.yaml/badge.svg)](https://github.com/fox-toolkit/rp/actions?query=workflow%3Atests)
+[![codecov](https://codecov.io/gh/fox-toolkit/rp/graph/badge.svg?token=7M87P7Q31N)](https://codecov.io/gh/fox-toolkit/rp)
+![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/fox-toolkit/rp)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/fox-toolkit/rp)
 
-# BFF
+# RP
 
-BFF is an OpenID Connect Relying Party and OAuth 2.0 client for the [Fox](https://github.com/fox-toolkit/fox) router.
-It provides a set of handlers and middleware to build a Backend For Frontend, the server-side gateway between a browser
-application and its APIs, as described in
-[OAuth 2.0 for Browser-Based Applications](https://www.rfc-editor.org/rfc/rfc10017.html).
+RP is an open-source OpenID Connect Relying Party for the [Fox](https://github.com/fox-toolkit/fox) router. It provides
+the handlers and middleware to build authentication gateways such as Backend for Frontend (BFF), as described in
+[OAuth 2.0 for Browser-Based Applications](https://www.rfc-editor.org/rfc/rfc10017.html), or Identity-Aware Proxy (IAP).
+
+RP supports any OpenID Provider through OpenID Connect Discovery, with sessions stored in encrypted cookies or in a
+server-side store, such as Redis or any implementation of the
+[Store](https://pkg.go.dev/github.com/fox-toolkit/rp/store#Store) interface.
 
 ## Disclaimer
 The current API is not yet stabilized. Breaking changes may occur before v1.0.0 and will be noted on the release note.
@@ -18,10 +21,11 @@ The current API is not yet stabilized. Breaking changes may occur before v1.0.0 
 ### Installation
 
 ````shell
-go get -u github.com/fox-toolkit/bff
+go get -u github.com/fox-toolkit/rp
 ````
 
 ### Usage
+#### Backend for Frontend
 ````go
 package main
 
@@ -33,13 +37,13 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/fox-toolkit/bff"
+	"github.com/fox-toolkit/rp"
 	"github.com/fox-toolkit/fox"
 	"github.com/tink-crypto/tink-go/v2/aead/subtle"
 )
 
 func main() {
-	provider, err := bff.NewProvider(context.Background(), "https://idp.example.com")
+	provider, err := rp.NewProvider(context.Background(), "https://idp.example.com")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -49,7 +53,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fe, err := bff.NewFrontend(bff.Client{
+	fe, err := rp.NewFrontend(rp.Client{
 		Provider:              provider,
 		ClientID:              "app",
 		ClientSecret:          os.Getenv("CLIENT_SECRET"),
@@ -63,8 +67,10 @@ func main() {
 	
 	api, _ := url.Parse("https://api.example.com")
 	proxy := &httputil.ReverseProxy{
-		Rewrite:   func(r *httputil.ProxyRequest) { r.SetURL(api) },
-		Transport: bff.Transport(nil),
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(api)
+		},
+		Transport: rp.Transport(nil),
 	}
 
 	f := fox.MustRouter()
@@ -78,15 +84,51 @@ func main() {
 
 	// The browser-based application is served here by the BFF. For other deployments, see
 	// https://www.rfc-editor.org/rfc/rfc10017.html#section-6.1.2.5. A cross-origin
-	// application requires bff.WithTrustedOrigins and a CORS middleware that allows its origin with credentials.
+	// application requires rp.WithTrustedOrigins and a CORS middleware that allows its origin with credentials.
 	f.MustAdd(fox.MethodGet, "/*{filepath}", fox.WrapH(http.FileServer(http.Dir("dist"))))
 	
 	log.Fatal(http.ListenAndServeTLS(":8443", "cert.pem", "key.pem", f))
 }
 ````
 
+#### Identity-Aware Proxy
+````go
+p, err := rp.NewProxy(rp.Client{
+	Provider:              provider,
+	ClientID:              "dashboard",
+	ClientSecret:          os.Getenv("CLIENT_SECRET"),
+	RedirectURL:           "https://dashboard.example.com/oauth2/callback",
+	PostLogoutRedirectURL: "https://dashboard.example.com/",
+	Scopes:                []string{"openid", "email", "groups"},
+}, aead,
+	rp.WithAccessRule(rp.EmailDomain("example.com")),
+	rp.WithIdentityHeader("X-Forwarded-Email", "email"),
+	rp.WithIdentityHeader("X-Forwarded-Groups", "groups"),
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+upstream, _ := url.Parse("http://dashboard.internal:8080")
+proxy := &httputil.ReverseProxy{
+	Rewrite: func(r *httputil.ProxyRequest) {
+		r.SetURL(upstream)
+		r.SetXForwarded()
+		r.Out.Host = r.In.Host
+	},
+}
+
+f := fox.MustRouter()
+f.MustAdd(fox.MethodGet, "/oauth2/callback", p.CallbackHandler())
+f.MustAdd(fox.MethodAny, "/oauth2/logout", p.LogoutHandler())
+
+// A navigation without a session starts the OpenID Connect Authorization Code Flow, see
+// https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth.
+f.MustAdd(fox.MethodAny, "/*{path}", fox.WrapH(proxy), fox.WithMiddleware(p.Authenticate()))
+````
+
 ## Open Standards
-BFF implements Open Standards set by the IETF:
+RP implements Open Standards set by the IETF:
 
 * [The OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749)
 * [The OAuth 2.0 Authorization Framework: Bearer Token Usage](https://datatracker.ietf.org/doc/html/rfc6750)
@@ -110,22 +152,22 @@ and the OpenID Foundation:
 * [FAPI 2.0 Message Signing](https://openid.net/specs/fapi-message-signing-2_0-final.html) (signed authorization requests)
 
 ## Conformance
-BFF passes the client test plans of the [OpenID Foundation conformance suite](https://openid.net/certification/)
+RP passes the client test plans of the [OpenID Foundation conformance suite](https://openid.net/certification/)
 v5.3.4 (see the [conformance](conformance) module). The FAPI 2.0 Security Profile and FAPI 2.0 Message Signing plans
 use the configuration below, and the OpenID Connect Basic, Config, refresh token, Back-Channel Logout and RP-Initiated
 Logout plans use a client secret.
 
 ````go
-fe, err := bff.NewFrontend(bff.Client{
+fe, err := rp.NewFrontend(rp.Client{
 	Provider:    provider,
 	ClientID:    "app",
 	ClientKey:   key, // EC P-256, RSA or Ed25519 private key
 	RedirectURL: "https://app.example.com/bff/callback",
 	Scopes:      []string{"openid"},
 }, aead,
-	bff.WithPushedAuthorization(bff.PushedAuthorizationRequired),
-	bff.WithDPoP(true),
-	bff.WithRequestObject(true), // FAPI 2.0 Message Signing only
-	bff.WithSigningAlgorithms("PS256", "ES256", "EdDSA"),
+	rp.WithPushedAuthorization(rp.PushedAuthorizationRequired),
+	rp.WithDPoP(true),
+	rp.WithRequestObject(true), // FAPI 2.0 Message Signing only
+	rp.WithSigningAlgorithms("PS256", "ES256", "EdDSA"),
 )
 ````

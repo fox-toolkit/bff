@@ -1,8 +1,8 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 // AEAD provides authenticated encryption with associated data. A [Frontend] uses it to encrypt its sessions. Key
 // rotation is the responsibility of the implementation.

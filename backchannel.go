@@ -1,8 +1,8 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ func (fe *Frontend) BackchannelHandler() fox.HandlerFunc {
 
 func (rp *relyingParty) backchannelHandler() fox.HandlerFunc {
 	if rp.cfg.store == nil {
-		panic("bff: back-channel logout requires a store")
+		panic("rp: back-channel logout requires a store")
 	}
 	return func(c *fox.Context) {
 		r := c.Request()

@@ -1,8 +1,8 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 import (
 	"crypto"
@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fox-toolkit/bff/internal/oidctest"
+	"github.com/fox-toolkit/rp/internal/oidctest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
