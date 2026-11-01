@@ -1,6 +1,6 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
 // Package redis provides a implementation of [store.Store] for Redis 6.2 or later.
 package redis
@@ -13,14 +13,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/fox-toolkit/bff/store"
+	"github.com/fox-toolkit/rp/store"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 var ErrInvalidConfig = errors.New("invalid config")
 
 // DefaultKeyPrefix is the default prefix of the keys written by a [Store].
-const DefaultKeyPrefix = "bff:"
+const DefaultKeyPrefix = "rp:"
 
 // Option configures a [Store].
 type Option interface {

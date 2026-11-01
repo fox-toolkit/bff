@@ -1,8 +1,8 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 import (
 	"errors"
@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/fox-toolkit/bff/store"
 	"github.com/fox-toolkit/fox"
+	"github.com/fox-toolkit/rp/store"
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"

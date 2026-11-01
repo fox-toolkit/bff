@@ -3,14 +3,14 @@ module conformance
 go 1.26.0
 
 replace (
-	github.com/fox-toolkit/bff => ../
-	github.com/fox-toolkit/bff/store/redis => ../store/redis
+	github.com/fox-toolkit/rp => ../
+	github.com/fox-toolkit/rp/store/redis => ../store/redis
 )
 
 require (
-	github.com/fox-toolkit/bff v0.4.1
-	github.com/fox-toolkit/bff/store/redis v0.1.1
 	github.com/fox-toolkit/fox v1.1.1
+	github.com/fox-toolkit/rp v0.6.0
+	github.com/fox-toolkit/rp/store/redis v0.2.0
 	github.com/redis/go-redis/v9 v9.23.0
 )
 

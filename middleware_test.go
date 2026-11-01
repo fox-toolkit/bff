@@ -1,11 +1,13 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
-package bff
+package rp
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -15,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fox-toolkit/bff/internal/oidctest"
-	"github.com/fox-toolkit/bff/store"
 	"github.com/fox-toolkit/fox"
+	"github.com/fox-toolkit/rp/internal/oidctest"
+	"github.com/fox-toolkit/rp/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -107,6 +109,18 @@ func TestMiddlewareAnonymous(t *testing.T) {
 	rec = e.do(http.MethodGet, "/catalog", e.loggedIn(t), nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.NotNil(t, (*got)[1].state.session)
+}
+
+func TestMiddlewareRouteRules(t *testing.T) {
+	var logs bytes.Buffer
+	e := newTestEnv(t, oidctest.Options{}, WithLogHandler(slog.NewTextHandler(&logs, nil)))
+	got := e.mount(t, "/admin", Require(Group("admins")))
+	e.mount(t, "/public", AllowAnonymous(), Require(Group("admins")))
+
+	assert.Equal(t, http.StatusInternalServerError, e.do(http.MethodGet, "/admin", e.loggedIn(t), nil).Code)
+	assert.Equal(t, http.StatusInternalServerError, e.do(http.MethodGet, "/public", nil, nil).Code)
+	assert.Empty(t, *got)
+	assert.Contains(t, logs.String(), errFrontendRules.Error())
 }
 
 func TestMiddlewareCSRF(t *testing.T) {

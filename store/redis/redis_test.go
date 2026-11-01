@@ -1,6 +1,6 @@
 // Copyright 2026 Sylvain Müller. All rights reserved.
 // Use of this source code is governed by a MIT license that can be found
-// at https://github.com/fox-toolkit/bff/blob/main/LICENSE.
+// at https://github.com/fox-toolkit/rp/blob/main/LICENSE.
 
 package redis
 
@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/fox-toolkit/bff/store"
-	"github.com/fox-toolkit/bff/store/storetest"
+	"github.com/fox-toolkit/rp/store"
+	"github.com/fox-toolkit/rp/store/storetest"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

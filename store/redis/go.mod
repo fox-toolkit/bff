@@ -1,12 +1,12 @@
-module github.com/fox-toolkit/bff/store/redis
+module github.com/fox-toolkit/rp/store/redis
 
 go 1.26.0
 
-replace github.com/fox-toolkit/bff => ../..
+replace github.com/fox-toolkit/rp => ../..
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
-	github.com/fox-toolkit/bff v0.2.1
+	github.com/fox-toolkit/rp v0.6.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/stretchr/testify v1.12.1
 )
