@@ -132,8 +132,8 @@ func TestNewFrontend(t *testing.T) {
 		fe, err := NewFrontend(c, nopAEAD{}, WithIdleTimeout(time.Minute), WithCSRFHeader("x-csrf", "1"))
 		require.NoError(t, err)
 		c.Scopes[1] = "email"
-		assert.Equal(t, []string{"openid", "profile"}, fe.oauth2.Scopes)
-		assert.Equal(t, "X-Csrf", fe.cfg.csrfHeader)
+		assert.Equal(t, []string{"openid", "profile"}, fe.rp.oauth2.Scopes)
+		assert.Equal(t, "X-Csrf", fe.rp.cfg.csrfHeader)
 	})
 
 	t.Run("same site trusted origins", func(t *testing.T) {
@@ -162,7 +162,7 @@ func TestNewFrontend(t *testing.T) {
 	cases := []struct {
 		name    string
 		client  func(c *Client)
-		opts    []Option
+		opts    []FrontendOption
 		nilAEAD bool
 	}{
 		{name: "nil provider", client: func(c *Client) { c.Provider = nil }},
@@ -179,48 +179,48 @@ func TestNewFrontend(t *testing.T) {
 		{name: "empty scope", client: func(c *Client) { c.Scopes = []string{"openid", ""} }},
 		{name: "scope with space", client: func(c *Client) { c.Scopes = []string{"openid", "a b"} }},
 		{name: "nil aead", client: func(*Client) {}, nilAEAD: true},
-		{name: "idle timeout", client: func(*Client) {}, opts: []Option{WithIdleTimeout(0)}},
-		{name: "absolute timeout", client: func(*Client) {}, opts: []Option{WithAbsoluteTimeout(-time.Second)}},
-		{name: "idle exceeds absolute", client: func(*Client) {}, opts: []Option{WithIdleTimeout(2 * time.Hour), WithAbsoluteTimeout(time.Hour)}},
-		{name: "csrf header name", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x csrf", "1")}},
-		{name: "csrf header value", client: func(*Client) {}, opts: []Option{WithCSRFHeader("x-csrf", "")}},
-		{name: "nil unauthorized handler", client: func(*Client) {}, opts: []Option{WithUnauthorizedHandler(nil)}},
-		{name: "nil log handler", client: func(*Client) {}, opts: []Option{WithLogHandler(nil)}},
-		{name: "trusted origin with path", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com/")}},
-		{name: "trusted origin without scheme", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("spa.example.com")}},
-		{name: "http trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("http://spa.example.com")}},
-		{name: "uppercase trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://SPA.example.com")}},
-		{name: "trusted origin with userinfo", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://user@spa.example.com")}},
-		{name: "trusted origin with default port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com:443")}},
-		{name: "cross-site trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://app.example.org")}},
-		{name: "trusted origin on a public suffix", client: func(c *Client) { c.RedirectURL = "https://bff.vercel.app/bff/callback" }, opts: []Option{WithTrustedOrigins("https://app.vercel.app")}},
-		{name: "trusted origin with another scheme", client: func(c *Client) { c.RedirectURL = "https://localhost:8443/bff/callback" }, opts: []Option{WithTrustedOrigins("http://localhost:5173")}},
-		{name: "trusted origin on another loopback host", client: func(c *Client) { c.RedirectURL = "http://localhost:8080/bff/callback" }, opts: []Option{WithTrustedOrigins("http://127.0.0.1:5173")}},
-		{name: "trusted origin on another ip", client: func(c *Client) { c.RedirectURL = "https://10.0.0.1/bff/callback" }, opts: []Option{WithTrustedOrigins("https://10.1.0.1")}},
-		{name: "trusted origin with empty port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com:")}},
-		{name: "loopback trusted origin with default port", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("http://localhost:80")}},
-		{name: "unicode trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://bücher.example")}},
-		{name: "wildcard trusted origin", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://*.example.com")}},
-		{name: "trusted origin with quote", client: func(*Client) {}, opts: []Option{WithTrustedOrigins("https://spa.example.com'")}},
+		{name: "idle timeout", client: func(*Client) {}, opts: []FrontendOption{WithIdleTimeout(0)}},
+		{name: "absolute timeout", client: func(*Client) {}, opts: []FrontendOption{WithAbsoluteTimeout(-time.Second)}},
+		{name: "idle exceeds absolute", client: func(*Client) {}, opts: []FrontendOption{WithIdleTimeout(2 * time.Hour), WithAbsoluteTimeout(time.Hour)}},
+		{name: "csrf header name", client: func(*Client) {}, opts: []FrontendOption{WithCSRFHeader("x csrf", "1")}},
+		{name: "csrf header value", client: func(*Client) {}, opts: []FrontendOption{WithCSRFHeader("x-csrf", "")}},
+		{name: "nil unauthorized handler", client: func(*Client) {}, opts: []FrontendOption{WithUnauthorizedHandler(nil)}},
+		{name: "nil log handler", client: func(*Client) {}, opts: []FrontendOption{WithLogHandler(nil)}},
+		{name: "trusted origin with path", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://spa.example.com/")}},
+		{name: "trusted origin without scheme", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("spa.example.com")}},
+		{name: "http trusted origin", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("http://spa.example.com")}},
+		{name: "uppercase trusted origin", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://SPA.example.com")}},
+		{name: "trusted origin with userinfo", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://user@spa.example.com")}},
+		{name: "trusted origin with default port", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://spa.example.com:443")}},
+		{name: "cross-site trusted origin", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://app.example.org")}},
+		{name: "trusted origin on a public suffix", client: func(c *Client) { c.RedirectURL = "https://bff.vercel.app/bff/callback" }, opts: []FrontendOption{WithTrustedOrigins("https://app.vercel.app")}},
+		{name: "trusted origin with another scheme", client: func(c *Client) { c.RedirectURL = "https://localhost:8443/bff/callback" }, opts: []FrontendOption{WithTrustedOrigins("http://localhost:5173")}},
+		{name: "trusted origin on another loopback host", client: func(c *Client) { c.RedirectURL = "http://localhost:8080/bff/callback" }, opts: []FrontendOption{WithTrustedOrigins("http://127.0.0.1:5173")}},
+		{name: "trusted origin on another ip", client: func(c *Client) { c.RedirectURL = "https://10.0.0.1/bff/callback" }, opts: []FrontendOption{WithTrustedOrigins("https://10.1.0.1")}},
+		{name: "trusted origin with empty port", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://spa.example.com:")}},
+		{name: "loopback trusted origin with default port", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("http://localhost:80")}},
+		{name: "unicode trusted origin", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://bücher.example")}},
+		{name: "wildcard trusted origin", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://*.example.com")}},
+		{name: "trusted origin with quote", client: func(*Client) {}, opts: []FrontendOption{WithTrustedOrigins("https://spa.example.com'")}},
 		{name: "dpop algorithm", client: func(c *Client) {
 			c.Provider = newTestProvider(t, map[string]any{"dpop_signing_alg_values_supported": []string{"RS256"}})
-		}, opts: []Option{WithDPoP(true)}},
-		{name: "unsupported signing algorithm", client: func(*Client) {}, opts: []Option{WithSigningAlgorithms("HS256")}},
-		{name: "no common signing algorithm", client: func(*Client) {}, opts: []Option{WithSigningAlgorithms("ES256")}},
+		}, opts: []FrontendOption{WithDPoP(true)}},
+		{name: "unsupported signing algorithm", client: func(*Client) {}, opts: []FrontendOption{WithSigningAlgorithms("HS256")}},
+		{name: "no common signing algorithm", client: func(*Client) {}, opts: []FrontendOption{WithSigningAlgorithms("ES256")}},
 		{name: "provider with unsupported signing algorithms", client: func(c *Client) {
 			c.Provider = newTestProvider(t, map[string]any{"id_token_signing_alg_values_supported": []string{"HS256"}})
-		}, opts: []Option{WithSigningAlgorithms("ES256")}},
+		}, opts: []FrontendOption{WithSigningAlgorithms("ES256")}},
 		{name: "provider with only unsupported signing algorithms", client: func(c *Client) {
 			c.Provider = newTestProvider(t, map[string]any{"id_token_signing_alg_values_supported": []string{"ES256K"}})
 		}},
-		{name: "pushed authorization mode", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(3)}},
-		{name: "pushed authorization without endpoint", client: func(*Client) {}, opts: []Option{WithPushedAuthorization(PushedAuthorizationRequired)}},
+		{name: "pushed authorization mode", client: func(*Client) {}, opts: []FrontendOption{WithPushedAuthorization(3)}},
+		{name: "pushed authorization without endpoint", client: func(*Client) {}, opts: []FrontendOption{WithPushedAuthorization(PushedAuthorizationRequired)}},
 		{name: "pushed authorization disabled but required", client: func(c *Client) {
 			c.Provider = newTestProvider(t, map[string]any{
 				"pushed_authorization_request_endpoint": "https://idp.example.com/par",
 				"require_pushed_authorization_requests": true,
 			})
-		}, opts: []Option{WithPushedAuthorization(PushedAuthorizationDisabled)}},
+		}, opts: []FrontendOption{WithPushedAuthorization(PushedAuthorizationDisabled)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,29 +243,29 @@ func TestNewFrontendRequestObject(t *testing.T) {
 		name     string
 		key      crypto.Signer
 		metadata map[string]any
-		opts     []Option
+		opts     []FrontendOption
 		alg      string
 		authAlg  string
 	}{
 		{name: "ec", key: keys["ec"], metadata: map[string]any{
 			"pushed_authorization_request_endpoint": par,
-		}, opts: []Option{WithRequestObject(true)}, alg: "ES256", authAlg: "ES256"},
+		}, opts: []FrontendOption{WithRequestObject(true)}, alg: "ES256", authAlg: "ES256"},
 		{name: "algorithm chosen apart from the assertion", key: keys["rsa"], metadata: map[string]any{
 			"pushed_authorization_request_endpoint":            par,
 			"token_endpoint_auth_signing_alg_values_supported": []string{"RS256"},
 			"request_object_signing_alg_values_supported":      []string{"PS256"},
-		}, opts: []Option{WithRequestObject(true)}, alg: "PS256", authAlg: "RS256"},
+		}, opts: []FrontendOption{WithRequestObject(true)}, alg: "PS256", authAlg: "RS256"},
 		{name: "unsupported algorithm", key: keys["ec"], metadata: map[string]any{
 			"pushed_authorization_request_endpoint":       par,
 			"request_object_signing_alg_values_supported": []string{"PS256"},
-		}, opts: []Option{WithRequestObject(true)}},
+		}, opts: []FrontendOption{WithRequestObject(true)}},
 		{name: "without client key", metadata: map[string]any{
 			"pushed_authorization_request_endpoint": par,
-		}, opts: []Option{WithRequestObject(true)}},
-		{name: "without pushed authorization endpoint", key: keys["ec"], opts: []Option{WithRequestObject(true)}},
+		}, opts: []FrontendOption{WithRequestObject(true)}},
+		{name: "without pushed authorization endpoint", key: keys["ec"], opts: []FrontendOption{WithRequestObject(true)}},
 		{name: "pushed authorization disabled", key: keys["ec"], metadata: map[string]any{
 			"pushed_authorization_request_endpoint": par,
-		}, opts: []Option{WithRequestObject(true), WithPushedAuthorization(PushedAuthorizationDisabled)}},
+		}, opts: []FrontendOption{WithRequestObject(true), WithPushedAuthorization(PushedAuthorizationDisabled)}},
 		{name: "required by the provider", key: keys["ec"], metadata: map[string]any{
 			"pushed_authorization_request_endpoint": par,
 			"require_signed_request_object":         true,
@@ -292,8 +292,8 @@ func TestNewFrontendRequestObject(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.alg, fe.requestObjectAlg)
-			assert.Equal(t, tc.authAlg, fe.auth.alg)
+			assert.Equal(t, tc.alg, fe.rp.requestObjectAlg)
+			assert.Equal(t, tc.authAlg, fe.rp.auth.alg)
 		})
 	}
 }
@@ -306,22 +306,22 @@ func TestWithResources(t *testing.T) {
 		WithSigningAlgorithms("RS256"),
 		WithSigningAlgorithms("PS256", "RS256"),
 	)
-	assert.Equal(t, []string{billing, "https://api.example.com/app/?tenant=1", orders}, e.fe.cfg.resources)
-	assert.Equal(t, []string{"RS256", "PS256"}, e.fe.cfg.signingAlgs)
+	assert.Equal(t, []string{billing, "https://api.example.com/app/?tenant=1", orders}, e.fe.rp.cfg.resources)
+	assert.Equal(t, []string{"RS256", "PS256"}, e.fe.rp.cfg.signingAlgs)
 
 	for _, resource := range []string{"/api", "https://api.example.com/#x", "https://api.example.com/#", "https://[::1", ""} {
-		assert.ErrorIs(t, WithResources(resource).apply(defaultConfig()), ErrInvalidConfig, resource)
+		assert.ErrorIs(t, WithResources(resource).applyFrontend(defaultConfig()), ErrInvalidConfig, resource)
 	}
 }
 
 func TestTrustedOrigins(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{},
-		WithTrustedOrigins("https://spa.example.com", "https://admin.example.com"),
+		WithTrustedOrigins("https://spa.example.com", "https://admin.rp.example.com"),
 		WithTrustedOrigins("https://spa.example.com"),
 	)
 	e.mount(t, "/api")
 	e.mountLogout(t)
-	assert.Equal(t, []string{"https://spa.example.com", "https://admin.example.com"}, e.fe.cfg.trustedOrigins)
+	assert.Equal(t, []string{"https://spa.example.com", "https://admin.rp.example.com"}, e.fe.rp.cfg.trustedOrigins)
 
 	t.Run("requests", func(t *testing.T) {
 		cookies := e.loggedIn(t)
@@ -350,7 +350,7 @@ func TestTrustedOrigins(t *testing.T) {
 
 	t.Run("logout", func(t *testing.T) {
 		cookies := e.loggedIn(t)
-		s, _, err := e.fe.readSession(t.Context(), cookies)
+		s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 		require.NoError(t, err)
 		header := http.Header{"Sec-Fetch-Site": {"same-site"}, "Origin": {"https://spa.example.com"}}
 		rec := e.doForm(http.MethodPost, "/bff/logout", cookies, header, url.Values{"csrf_token": {s.LogoutCSRFToken}})

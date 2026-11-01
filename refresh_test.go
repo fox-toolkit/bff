@@ -7,6 +7,7 @@ package bff
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/fox-toolkit/bff/internal/oidctest"
+	"github.com/fox-toolkit/bff/store"
+	"github.com/fox-toolkit/fox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -207,6 +210,50 @@ func TestRefreshedIDToken(t *testing.T) {
 
 			assert.Equal(t, http.StatusUnauthorized, e.do(http.MethodGet, "/api", cookies, nil).Code)
 			assert.Empty(t, e.idp.Revoked())
+		})
+	}
+}
+
+func TestRefreshUserInfo(t *testing.T) {
+	cases := []struct {
+		name     string
+		update   func(*oidctest.Options)
+		status   int
+		groups   []any
+		stateful bool
+		dpop     bool
+	}{
+		{name: "updated", update: func(o *oidctest.Options) { o.UserInfo = map[string]any{"groups": []any{"ops"}} }, status: http.StatusOK, groups: []any{"ops"}},
+		{name: "updated stateful", update: func(o *oidctest.Options) { o.UserInfo = map[string]any{"groups": []any{"ops"}} }, status: http.StatusOK, groups: []any{"ops"}, stateful: true},
+		{name: "updated dpop", update: func(o *oidctest.Options) { o.UserInfo = map[string]any{"groups": []any{"ops"}} }, status: http.StatusOK, groups: []any{"ops"}, dpop: true},
+		{name: "request failed", update: func(o *oidctest.Options) { o.UserInfoStatus = http.StatusInternalServerError }, status: http.StatusOK, groups: []any{"dev"}},
+		{name: "sub changed", update: func(o *oidctest.Options) { o.UserInfo = map[string]any{"sub": "mallory"} }, status: http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := []FrontendOption{WithUserInfo(true), WithDPoP(tc.dpop)}
+			if tc.stateful {
+				opts = append(opts, WithStore(&mapStore{records: make(map[string]store.Record)}))
+			}
+			e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, UserInfo: map[string]any{"groups": []any{"dev"}}}, opts...)
+			e.mountHandler(t, "/api", func(c *fox.Context) {
+				claims, _ := UserClaims(c.Request().Context())
+				_ = json.NewEncoder(c.Writer()).Encode(claims["groups"])
+			})
+			cookies := e.loggedIn(t)
+			e.idp.Update(tc.update)
+			e.skipAhead(20 * time.Second)
+
+			for range 2 {
+				rec := e.do(http.MethodGet, "/api", cookies, nil)
+				require.Equal(t, tc.status, rec.Code)
+				if tc.status != http.StatusOK {
+					return
+				}
+				var groups []any
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &groups))
+				assert.Equal(t, tc.groups, groups)
+			}
 		})
 	}
 }

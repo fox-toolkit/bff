@@ -64,7 +64,7 @@ func (e *testEnv) loggedIn(t testing.TB) []*http.Cookie {
 }
 
 func (e *testEnv) skipAhead(d time.Duration) {
-	e.fe.now = func() time.Time { return time.Now().Add(d) }
+	e.fe.rp.now = func() time.Time { return time.Now().Add(d) }
 }
 
 func sessionCookieLines(h http.Header) []string {
@@ -150,14 +150,14 @@ func TestMiddlewareExpiry(t *testing.T) {
 	start := time.Now()
 
 	t.Run("idle timeout slides", func(t *testing.T) {
-		e.fe.now = func() time.Time { return start.Add(DefaultIdleTimeout/2 + time.Second) }
+		e.fe.rp.now = func() time.Time { return start.Add(DefaultIdleTimeout/2 + time.Second) }
 		assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
-		e.fe.now = func() time.Time { return start.Add(DefaultIdleTimeout + time.Minute) }
+		e.fe.rp.now = func() time.Time { return start.Add(DefaultIdleTimeout + time.Minute) }
 		assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
 	})
 
 	t.Run("absolute timeout", func(t *testing.T) {
-		e.fe.now = func() time.Time { return start.Add(DefaultAbsoluteTimeout) }
+		e.fe.rp.now = func() time.Time { return start.Add(DefaultAbsoluteTimeout) }
 		rec := e.do(http.MethodGet, "/api", cookies, nil)
 		assert.Equal(t, http.StatusUnauthorized, rec.Code)
 		assert.Len(t, sessionCookieLines(rec.Header()), 1)
@@ -167,7 +167,7 @@ func TestMiddlewareExpiry(t *testing.T) {
 
 func TestMiddlewareRefresh(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
-		var opts []Option
+		var opts []FrontendOption
 		if stateful {
 			opts = append(opts, WithStore(&mapStore{records: make(map[string]store.Record)}))
 		}
@@ -175,7 +175,7 @@ func TestMiddlewareRefresh(t *testing.T) {
 		got := e.mount(t, "/api")
 		cookies := e.loggedIn(t)
 		e.skipAhead(20 * time.Second)
-		before, _, err := e.fe.readSession(t.Context(), cookies)
+		before, _, err := e.fe.rp.readSession(t.Context(), cookies)
 		require.NoError(t, err)
 
 		rec := e.do(http.MethodGet, "/api", cookies, nil)
@@ -191,7 +191,7 @@ func TestMiddlewareRefresh(t *testing.T) {
 			require.NotEmpty(t, lines)
 			cookies = requestCookies(t, rec.Header())
 		}
-		after, _, err := e.fe.readSession(t.Context(), cookies)
+		after, _, err := e.fe.rp.readSession(t.Context(), cookies)
 		require.NoError(t, err)
 		assert.Equal(t, refreshed.AccessToken, after.AccessToken)
 	}
@@ -199,7 +199,7 @@ func TestMiddlewareRefresh(t *testing.T) {
 
 func TestMiddlewareRefreshRotation(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
-		var opts []Option
+		var opts []FrontendOption
 		if stateful {
 			opts = append(opts, WithStore(slowStore{&mapStore{records: make(map[string]store.Record)}}))
 		}
@@ -245,7 +245,7 @@ func TestMiddlewareRefreshRejected(t *testing.T) {
 	e.mount(t, "/api")
 	cookies := e.loggedIn(t)
 	e.skipAhead(20 * time.Second)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	resp, err := e.idp.Client().PostForm(e.idp.URL+"/revoke", url.Values{
@@ -269,7 +269,7 @@ func TestMiddlewareProviderDown(t *testing.T) {
 	e.idp.Close()
 
 	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
-	e.fe.now = func() time.Time { return time.Now().Add(time.Minute) }
+	e.fe.rp.now = func() time.Time { return time.Now().Add(time.Minute) }
 	assert.Equal(t, http.StatusBadGateway, e.do(http.MethodGet, "/api", cookies, nil).Code)
 }
 
@@ -359,14 +359,14 @@ func TestMiddlewareRefreshFailureShared(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second})
 	e.mount(t, "/api")
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
-	e.fe.now = func() time.Time { return time.Now().Add(time.Minute) }
-	client := *e.fe.provider.client
+	e.fe.rp.now = func() time.Time { return time.Now().Add(time.Minute) }
+	client := *e.fe.rp.provider.client
 	fr := &failRefresh{base: client.Transport, release: make(chan struct{})}
 	fr.fail.Store(true)
 	client.Transport = fr
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 
 	codes := make(chan int, 3)
 	for range 3 {
@@ -384,18 +384,18 @@ func TestMiddlewareRefreshFailureSharedKeepsLatest(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{AccessTokenTTL: 30 * time.Second, RotateRefreshTokens: true}, WithIdleTimeout(70*time.Second))
 	e.mount(t, "/api")
 	cookies := e.loggedIn(t)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	e.skipAhead(20 * time.Second)
 	e.doContext(e.cancelOnRefresh(t), "/api", cookies)
 
 	e.skipAhead(55 * time.Second)
-	client := *e.fe.provider.client
+	client := *e.fe.rp.provider.client
 	fr := &failRefresh{base: client.Transport, release: make(chan struct{})}
 	fr.fail.Store(true)
 	client.Transport = fr
-	e.fe.provider.client = &client
+	e.fe.rp.provider.client = &client
 
 	recs := make(chan *httptest.ResponseRecorder, 2)
 	for range 2 {
@@ -408,7 +408,7 @@ func TestMiddlewareRefreshFailureSharedKeepsLatest(t *testing.T) {
 	for range 2 {
 		rec := <-recs
 		assert.Equal(t, http.StatusBadGateway, rec.Code)
-		got, _, err := e.fe.readSession(t.Context(), requestCookies(t, rec.Header()))
+		got, _, err := e.fe.rp.readSession(t.Context(), requestCookies(t, rec.Header()))
 		require.NoError(t, err)
 		tokens = append(tokens, got.RefreshToken)
 	}
@@ -423,7 +423,7 @@ func TestMiddlewareRefreshRejectedCanceledRequest(t *testing.T) {
 	e.mount(t, "/api")
 	cookies := e.loggedIn(t)
 	e.skipAhead(20 * time.Second)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
 
 	resp, err := e.idp.Client().PostForm(e.idp.URL+"/revoke", url.Values{
@@ -445,9 +445,9 @@ func TestMiddlewareRefreshCanceledRequest(t *testing.T) {
 	e.skipAhead(20 * time.Second)
 
 	e.doContext(e.cancelOnRefresh(t), "/api", cookies)
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
-	e.fe.tokens.Forget(s.LogoutCSRFToken)
+	e.fe.rp.tokens.Forget(s.LogoutCSRFToken)
 
 	e.skipAhead(50 * time.Second)
 	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
@@ -465,9 +465,9 @@ func TestMiddlewareRefreshBearerUnderDPoP(t *testing.T) {
 	cookies = requestCookies(t, rec.Header())
 	require.NotEmpty(t, cookies)
 
-	s, _, err := e.fe.readSession(t.Context(), cookies)
+	s, _, err := e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
-	e.fe.tokens.Forget(s.LogoutCSRFToken)
+	e.fe.rp.tokens.Forget(s.LogoutCSRFToken)
 	e.idp.Update(func(o *oidctest.Options) { o.IgnoreDPoP = false })
 	assert.Equal(t, http.StatusOK, e.do(http.MethodGet, "/api", cookies, nil).Code)
 }

@@ -114,7 +114,7 @@ func TestCookieReadIgnoresStaleChunks(t *testing.T) {
 
 func TestCookieClear(t *testing.T) {
 	h := make(http.Header)
-	loginCookie("abc").clear(h, 2)
+	loginCookie(sessionCookie, "abc").clear(h, 2)
 	assert.Equal(t, []string{
 		"__Host-Http-BFF-Login-abc.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
 		"__Host-Http-BFF-Login-abc.1=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",

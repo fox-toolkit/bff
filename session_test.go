@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestFrontend(t testing.TB, opts ...Option) *Frontend {
+func newTestFrontend(t testing.TB, opts ...FrontendOption) *Frontend {
 	t.Helper()
 	fe, err := NewFrontend(Client{
 		Provider:     newTestProvider(t, nil),
@@ -46,14 +46,14 @@ func TestSessionStateless(t *testing.T) {
 	s := testSession()
 
 	h := make(http.Header)
-	require.NoError(t, fe.writeSession(t.Context(), h, s, sessionState{}))
-	got, st, err := fe.readSession(t.Context(), requestCookies(t, h))
+	require.NoError(t, fe.rp.writeSession(t.Context(), h, s, sessionState{}))
+	got, st, err := fe.rp.readSession(t.Context(), requestCookies(t, h))
 	require.NoError(t, err)
 	assert.Equal(t, s, got)
 	assert.Equal(t, sessionState{chunks: 1}, st)
 
 	h = make(http.Header)
-	require.NoError(t, fe.deleteSession(t.Context(), h, st))
+	require.NoError(t, fe.rp.deleteSession(t.Context(), h, st))
 	assert.Equal(t, []string{"__Host-Http-BFF.0=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"}, h.Values("Set-Cookie"))
 }
 
@@ -120,7 +120,7 @@ func TestSessionStateful(t *testing.T) {
 	ctx := t.Context()
 
 	h := make(http.Header)
-	require.NoError(t, fe.writeSession(ctx, h, s, sessionState{}))
+	require.NoError(t, fe.rp.writeSession(ctx, h, s, sessionState{}))
 	require.Len(t, ms.records, 1)
 	for _, r := range ms.records {
 		assert.Equal(t, "alice", r.Subject)
@@ -130,7 +130,7 @@ func TestSessionStateful(t *testing.T) {
 	}
 
 	cookies := requestCookies(t, h)
-	got, st, err := fe.readSession(ctx, cookies)
+	got, st, err := fe.rp.readSession(ctx, cookies)
 	require.NoError(t, err)
 	assert.Equal(t, s, got)
 	assert.NotEmpty(t, st.id)
@@ -139,17 +139,17 @@ func TestSessionStateful(t *testing.T) {
 	t.Run("update keeps the cookie", func(t *testing.T) {
 		got.AccessToken = "new-access-token"
 		h := make(http.Header)
-		require.NoError(t, fe.writeSession(ctx, h, got, st))
+		require.NoError(t, fe.rp.writeSession(ctx, h, got, st))
 		assert.Empty(t, h.Values("Set-Cookie"))
-		updated, _, err := fe.readSession(ctx, cookies)
+		updated, _, err := fe.rp.readSession(ctx, cookies)
 		require.NoError(t, err)
 		assert.Equal(t, "new-access-token", updated.AccessToken)
 	})
 
 	t.Run("new session gets a new key", func(t *testing.T) {
 		h := make(http.Header)
-		require.NoError(t, fe.writeSession(ctx, h, testSession(), sessionState{chunks: st.chunks}))
-		_, other, err := fe.readSession(ctx, requestCookies(t, h))
+		require.NoError(t, fe.rp.writeSession(ctx, h, testSession(), sessionState{chunks: st.chunks}))
+		_, other, err := fe.rp.readSession(ctx, requestCookies(t, h))
 		require.NoError(t, err)
 		assert.NotEqual(t, st.id, other.id)
 	})
@@ -158,19 +158,19 @@ func TestSessionStateful(t *testing.T) {
 		r, err := ms.Load(ctx, st.id)
 		require.NoError(t, err)
 		h := make(http.Header)
-		require.NoError(t, fe.writeSession(ctx, h, testSession(), sessionState{}))
-		_, other, err := fe.readSession(ctx, requestCookies(t, h))
+		require.NoError(t, fe.rp.writeSession(ctx, h, testSession(), sessionState{}))
+		_, other, err := fe.rp.readSession(ctx, requestCookies(t, h))
 		require.NoError(t, err)
 		require.NoError(t, ms.Update(ctx, other.id, r))
-		_, _, err = fe.readSession(ctx, requestCookies(t, h))
+		_, _, err = fe.rp.readSession(ctx, requestCookies(t, h))
 		assert.ErrorIs(t, err, errNoSession)
 	})
 
 	t.Run("deleted", func(t *testing.T) {
 		h := make(http.Header)
-		require.NoError(t, fe.deleteSession(ctx, h, st))
+		require.NoError(t, fe.rp.deleteSession(ctx, h, st))
 		assert.Len(t, h.Values("Set-Cookie"), 1)
-		_, st, err := fe.readSession(ctx, cookies)
+		_, st, err := fe.rp.readSession(ctx, cookies)
 		assert.ErrorIs(t, err, errNoSession)
 		assert.Equal(t, 1, st.chunks)
 	})
@@ -183,8 +183,8 @@ func TestSessionVersion(t *testing.T) {
 	data, err := json.Marshal(s)
 	require.NoError(t, err)
 	h := make(http.Header)
-	require.NoError(t, sessionCookie.write(h, fe.aead, data, 0, 0))
-	_, _, err = fe.readSession(t.Context(), requestCookies(t, h))
+	require.NoError(t, sessionCookie.write(h, fe.rp.aead, data, 0, 0))
+	_, _, err = fe.rp.readSession(t.Context(), requestCookies(t, h))
 	assert.ErrorIs(t, err, errNoSession)
 }
 
@@ -224,7 +224,7 @@ func TestSessionBoundToFrontend(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{})
 	cookies := e.loggedIn(t)
 	admin, err := NewFrontend(Client{
-		Provider:     e.fe.provider,
+		Provider:     e.fe.rp.provider,
 		ClientID:     "admin",
 		ClientSecret: oidctest.ClientSecret,
 		RedirectURL:  appOrigin + "/bff/callback",
@@ -232,9 +232,9 @@ func TestSessionBoundToFrontend(t *testing.T) {
 	}, newGCMAEAD(t))
 	require.NoError(t, err)
 
-	_, _, err = e.fe.readSession(t.Context(), cookies)
+	_, _, err = e.fe.rp.readSession(t.Context(), cookies)
 	require.NoError(t, err)
-	_, _, err = admin.readSession(t.Context(), cookies)
+	_, _, err = admin.rp.readSession(t.Context(), cookies)
 	assert.ErrorIs(t, err, errNoSession)
 }
 
@@ -250,7 +250,7 @@ func (s slowStore) Update(ctx context.Context, id string, r store.Record) error 
 
 func TestSessionPrune(t *testing.T) {
 	fe := newTestFrontend(t, WithResources(billing, orders))
-	now := fe.now()
+	now := fe.rp.now()
 	s := testSession()
 	s.Resources = map[string]resourceToken{
 		billing:                       {AccessToken: "expired", Expiry: now.Add(-time.Second).Unix()},
@@ -259,8 +259,8 @@ func TestSessionPrune(t *testing.T) {
 	}
 
 	h := make(http.Header)
-	require.NoError(t, fe.writeSession(t.Context(), h, s, sessionState{}))
-	got, _, err := fe.readSession(t.Context(), requestCookies(t, h))
+	require.NoError(t, fe.rp.writeSession(t.Context(), h, s, sessionState{}))
+	got, _, err := fe.rp.readSession(t.Context(), requestCookies(t, h))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]resourceToken{orders: s.Resources[orders]}, got.Resources)
 }

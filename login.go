@@ -63,6 +63,7 @@ type loginState struct {
 // request endpoint of the provider, so the route should be rate limited. If this request fails, the handler responds
 // with 502 Bad Gateway.
 func (fe *Frontend) LoginHandler() fox.HandlerFunc {
+	rp := fe.rp
 	return func(c *fox.Context) {
 		r := c.Request()
 		w := c.Writer()
@@ -73,14 +74,14 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 		if returnURL == "" {
 			returnURL = "/"
 		} else if encoded, _ := json.Marshal(returnURL); len(encoded)-2 > maxReturnURL ||
-			!localURL(returnURL) && !fe.trustedURL(returnURL) {
-			fe.logRejected(r, "invalid return url", nil)
+			!localURL(returnURL) && !rp.trustedURL(returnURL) {
+			rp.logRejected(r, "invalid return url", nil)
 			badRequest(w)
 			return
 		}
 		prompt := q.Get("prompt")
-		if prompt != "" && !fe.validPrompt(prompt) {
-			fe.logRejected(r, "invalid prompt", nil)
+		if prompt != "" && !rp.validPrompt(prompt) {
+			rp.logRejected(r, "invalid prompt", nil)
 			badRequest(w)
 			return
 		}
@@ -89,108 +90,109 @@ func (fe *Frontend) LoginHandler() fox.HandlerFunc {
 			// ParseUint rejects a sign, and 32 bits keep the duration in range.
 			n, err := strconv.ParseUint(v, 10, 32)
 			if err != nil {
-				fe.logRejected(r, "invalid max_age", nil)
+				rp.logRejected(r, "invalid max_age", nil)
 				badRequest(w)
 				return
 			}
 			maxAge = new(int64(n))
 		}
 		acrValues := q.Get("acr_values")
-		if acrValues != "" && !fe.validACRValues(acrValues) {
-			fe.logRejected(r, "invalid acr_values", nil)
+		if acrValues != "" && !rp.validACRValues(acrValues) {
+			rp.logRejected(r, "invalid acr_values", nil)
 			badRequest(w)
 			return
 		}
-		state := randomString()
-		ls := loginState{
-			Verifier:  oauth2.GenerateVerifier(),
-			Nonce:     randomString(),
-			ReturnURL: returnURL,
-			MaxAge:    maxAge,
-			ACRValues: acrValues,
-			Created:   fe.now().UnixNano(),
-		}
-		params := url.Values{
-			"response_type":         {"code"},
-			"client_id":             {fe.oauth2.ClientID},
-			"redirect_uri":          {fe.oauth2.RedirectURL},
-			"scope":                 {strings.Join(fe.oauth2.Scopes, " ")},
-			"state":                 {state},
-			"nonce":                 {ls.Nonce},
-			"code_challenge":        {oauth2.S256ChallengeFromVerifier(ls.Verifier)},
-			"code_challenge_method": {"S256"},
-		}
-		if prompt != "" {
-			params.Set("prompt", prompt)
-		}
-		if maxAge != nil {
-			params.Set("max_age", strconv.FormatInt(*maxAge, 10))
-		}
-		if acrValues != "" {
-			params.Set("acr_values", acrValues)
-		}
-		if len(fe.cfg.resources) > 0 {
-			// RFC 8707 2.1: the resources apply to the full grant, so their access tokens are requested with the
-			// refresh token.
-			params["resource"] = slices.Clone(fe.cfg.resources)
-		}
-		if fe.cfg.dpop {
-			key, raw, err := newDPoPKey()
-			if err != nil {
-				fe.logFailed(r, "dpop key", err)
-				internalError(w)
-				return
-			}
-			ls.DPoPKey = raw
-			// RFC 9449 10: the authorization code is bound to the key.
-			params.Set("dpop_jkt", key.jkt)
-		}
-		if fe.parEndpoint != "" {
-			requestURI, err := fe.pushAuthorizationRequest(r.Context(), params)
-			if err != nil {
-				fe.logFailed(r, "pushed authorization request", err)
-				http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-				return
-			}
-			params = url.Values{"client_id": {fe.oauth2.ClientID}, "request_uri": {requestURI}}
-		}
+		rp.startLogin(w, r, loginState{ReturnURL: returnURL, MaxAge: maxAge, ACRValues: acrValues}, prompt)
+	}
+}
 
-		fe.trimPendingLogins(w.Header(), r.Cookies())
-		data, err := json.Marshal(ls)
-		if err == nil {
-			err = loginCookie(state).write(w.Header(), fe.aead, data, int(loginTimeout.Seconds()), 0)
-		}
+// startLogin redirects to the provider to start the authorization code flow, with the return URL, max_age and
+// acr_values of ls.
+func (rp *relyingParty) startLogin(w http.ResponseWriter, r *http.Request, ls loginState, prompt string) {
+	state := randomString()
+	ls.Verifier = oauth2.GenerateVerifier()
+	ls.Nonce = randomString()
+	ls.Created = rp.now().UnixNano()
+	params := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {rp.oauth2.ClientID},
+		"redirect_uri":          {rp.oauth2.RedirectURL},
+		"scope":                 {strings.Join(rp.oauth2.Scopes, " ")},
+		"state":                 {state},
+		"nonce":                 {ls.Nonce},
+		"code_challenge":        {oauth2.S256ChallengeFromVerifier(ls.Verifier)},
+		"code_challenge_method": {"S256"},
+	}
+	if prompt != "" {
+		params.Set("prompt", prompt)
+	}
+	if ls.MaxAge != nil {
+		params.Set("max_age", strconv.FormatInt(*ls.MaxAge, 10))
+	}
+	if ls.ACRValues != "" {
+		params.Set("acr_values", ls.ACRValues)
+	}
+	if len(rp.cfg.resources) > 0 {
+		// RFC 8707 2.1: the resources apply to the full grant, so their access tokens are requested with the
+		// refresh token.
+		params["resource"] = slices.Clone(rp.cfg.resources)
+	}
+	if rp.cfg.dpop {
+		key, raw, err := newDPoPKey()
 		if err != nil {
-			fe.logFailed(r, "login cookie", err)
+			rp.logFailed(r, "dpop key", err)
 			internalError(w)
 			return
 		}
-
-		authURL := fe.oauth2.Endpoint.AuthURL
-		sep := "?"
-		if strings.Contains(authURL, "?") {
-			sep = "&"
-		}
-		http.Redirect(w, r, authURL+sep+params.Encode(), http.StatusFound)
+		ls.DPoPKey = raw
+		// RFC 9449 10: the authorization code is bound to the key.
+		params.Set("dpop_jkt", key.jkt)
 	}
+	if rp.parEndpoint != "" {
+		requestURI, err := rp.pushAuthorizationRequest(r.Context(), params)
+		if err != nil {
+			rp.logFailed(r, "pushed authorization request", err)
+			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+			return
+		}
+		params = url.Values{"client_id": {rp.oauth2.ClientID}, "request_uri": {requestURI}}
+	}
+
+	rp.trimPendingLogins(w.Header(), r.Cookies())
+	data, err := json.Marshal(ls)
+	if err == nil {
+		err = rp.loginCookie(state).write(w.Header(), rp.aead, data, int(loginTimeout.Seconds()), 0)
+	}
+	if err != nil {
+		rp.logFailed(r, "login cookie", err)
+		internalError(w)
+		return
+	}
+
+	authURL := rp.oauth2.Endpoint.AuthURL
+	sep := "?"
+	if strings.Contains(authURL, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, authURL+sep+params.Encode(), http.StatusFound)
 }
 
 // pushAuthorizationRequest pushes the authorization request to the provider, as defined by RFC 9126, and returns its
 // request URI.
-func (fe *Frontend) pushAuthorizationRequest(ctx context.Context, params url.Values) (string, error) {
-	if fe.requestObjectAlg != "" {
+func (rp *relyingParty) pushAuthorizationRequest(ctx context.Context, params url.Values) (string, error) {
+	if rp.requestObjectAlg != "" {
 		// RFC 9126 3: the form only has the request object and the parameters of the client authentication.
-		request, err := fe.auth.requestObject(params, fe.requestObjectAlg, fe.now())
+		request, err := rp.auth.requestObject(params, rp.requestObjectAlg, rp.now())
 		if err != nil {
 			return "", err
 		}
 		params = url.Values{"request": {request}}
 	}
-	req, err := fe.auth.newRequest(ctx, fe.parEndpoint, params, fe.now)
+	req, err := rp.auth.newRequest(ctx, rp.parEndpoint, params, rp.now)
 	if err != nil {
 		return "", err
 	}
-	resp, err := fe.provider.client.Do(req)
+	resp, err := rp.provider.client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -221,7 +223,7 @@ func (fe *Frontend) pushAuthorizationRequest(ctx context.Context, params url.Val
 }
 
 // trimPendingLogins deletes the login cookies of the oldest pending logins, keeping room for a new one.
-func (fe *Frontend) trimPendingLogins(h http.Header, cookies []*http.Cookie) {
+func (rp *relyingParty) trimPendingLogins(h http.Header, cookies []*http.Cookie) {
 	type pending struct {
 		spec    cookieSpec
 		created int64
@@ -230,7 +232,7 @@ func (fe *Frontend) trimPendingLogins(h http.Header, cookies []*http.Cookie) {
 	var logins []pending
 	seen := make(map[string]bool)
 	for _, c := range cookies {
-		name, ok := strings.CutPrefix(c.Name, loginCookie("").name)
+		name, ok := strings.CutPrefix(c.Name, rp.loginCookie("").name)
 		if !ok {
 			continue
 		}
@@ -239,8 +241,8 @@ func (fe *Frontend) trimPendingLogins(h http.Header, cookies []*http.Cookie) {
 			continue
 		}
 		seen[id] = true
-		spec := loginCookie(id)
-		data, chunks, err := spec.read(cookies, fe.aead)
+		spec := rp.loginCookie(id)
+		data, chunks, err := spec.read(cookies, rp.aead)
 		var ls loginState
 		if err != nil || json.Unmarshal(data, &ls) != nil {
 			spec.clear(h, max(chunks, 1))
@@ -261,6 +263,13 @@ func (fe *Frontend) trimPendingLogins(h http.Header, cookies []*http.Cookie) {
 // to the return URL. If the provider returns an error, such as login_required for prompt=none, it redirects to the
 // return URL without a new session.
 func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
+	return fe.rp.callbackHandler(nil, false)
+}
+
+// callbackHandler returns the handler of the redirect URL. When allow is not nil and returns false for the new session,
+// the login is refused with 403 Forbidden. An error of the provider is answered with 403 Forbidden when forbidError is
+// true, and with a redirect to the return URL otherwise.
+func (rp *relyingParty) callbackHandler(allow func(*session) bool, forbidError bool) fox.HandlerFunc {
 	return func(c *fox.Context) {
 		r := c.Request()
 		w := c.Writer()
@@ -270,69 +279,80 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 		q := r.URL.Query()
 		state := q.Get("state")
 		if state == "" {
-			fe.logRejected(r, "invalid callback", errors.New("no state"))
+			rp.logRejected(r, "invalid callback", errors.New("no state"))
 			badRequest(w)
 			return
 		}
 		cookies := r.Cookies()
-		spec := loginCookie(state)
-		data, chunks, err := spec.read(cookies, fe.aead)
+		spec := rp.loginCookie(state)
+		data, chunks, err := spec.read(cookies, rp.aead)
 		spec.clear(h, chunks)
 		if err != nil {
-			fe.logRejected(r, "invalid callback", fmt.Errorf("login cookie: %w", err))
+			rp.logRejected(r, "invalid callback", fmt.Errorf("login cookie: %w", err))
 			badRequest(w)
 			return
 		}
 		var ls loginState
-		if err = json.Unmarshal(data, &ls); err != nil || fe.now().After(time.Unix(0, ls.Created).Add(loginTimeout)) {
-			fe.logRejected(r, "invalid callback", errors.New("login expired"))
+		if err = json.Unmarshal(data, &ls); err != nil || rp.now().After(time.Unix(0, ls.Created).Add(loginTimeout)) {
+			rp.logRejected(r, "invalid callback", errors.New("login expired"))
 			badRequest(w)
 			return
 		}
 
 		// RFC 9207: the response must come from the provider the login was started with.
-		if iss := q.Get("iss"); (iss != "" || fe.provider.issParameter) && iss != fe.provider.issuer {
-			fe.logRejected(r, "invalid callback", fmt.Errorf("iss mismatch: %q", iss))
+		if iss := q.Get("iss"); (iss != "" || rp.provider.issParameter) && iss != rp.provider.issuer {
+			rp.logRejected(r, "invalid callback", fmt.Errorf("iss mismatch: %q", iss))
 			badRequest(w)
 			return
 		}
 		if e := q.Get("error"); e != "" {
-			fe.logger.InfoContext(r.Context(), "provider returned an error", "path", r.URL.Path, "error", e)
+			rp.logger.InfoContext(r.Context(), "provider returned an error", "path", r.URL.Path, "error", e)
+			if forbidError {
+				http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+				return
+			}
 			http.Redirect(w, r, ls.ReturnURL, http.StatusFound)
 			return
 		}
 
-		s, err := fe.exchange(r, q.Get("code"), ls)
+		s, err := rp.exchange(r, q.Get("code"), ls)
 		if err != nil {
 			if _, ok := errors.AsType[*tokenError](err); ok || errors.Is(err, errInvalidLogin) {
-				fe.logRejected(r, "invalid callback", err)
+				rp.logRejected(r, "invalid callback", err)
 				badRequest(w)
 			} else {
-				fe.logFailed(r, "provider unavailable", err)
+				rp.logFailed(r, "provider unavailable", err)
 				http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 			}
+			return
+		}
+		if allow != nil && !allow(s) {
+			// Do not revoke the refresh token. Some providers, such as Keycloak, would also revoke the tokens of the other
+			// sessions with the same sid.
+			rp.logRejected(r, "access denied", errAccessDenied)
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
 
 		// Replace any previous session of the client. The session cookie is usually not sent on the cross-site redirect
 		// from the provider, so the previous sessions of the same provider session are also found by their sid.
 		// Do not revoke their refresh tokens. Some providers, such as Keycloak, would also revoke the tokens just received.
-		_, prev, err := fe.readSession(r.Context(), cookies)
+		_, prev, err := rp.readSession(r.Context(), cookies)
 		if err == nil && prev.id != "" {
-			_ = fe.cfg.store.Delete(r.Context(), prev.id)
+			_ = rp.cfg.store.Delete(r.Context(), prev.id)
 		}
-		if fe.cfg.store != nil && s.SID != "" {
-			if _, err := fe.cfg.store.DeleteBy(r.Context(), fe.partition, s.Subject, s.SID); err != nil {
-				fe.logFailed(r, "session store", err)
+		if rp.cfg.store != nil && s.SID != "" {
+			if _, err := rp.cfg.store.DeleteBy(r.Context(), rp.partition, s.Subject, s.SID); err != nil {
+				rp.logFailed(r, "session store", err)
 				internalError(w)
 				return
 			}
 		}
-		if len(fe.cfg.resources) > 0 && s.RefreshToken == "" {
-			fe.logger.WarnContext(r.Context(), "resources declared but no refresh token", "path", r.URL.Path)
+		if len(rp.cfg.resources) > 0 && s.RefreshToken == "" {
+			rp.logger.WarnContext(r.Context(), "resources declared but no refresh token", "path", r.URL.Path)
 		}
-		if err := fe.writeSession(r.Context(), h, s, sessionState{chunks: prev.chunks}); err != nil {
-			fe.logFailed(r, "session store", err)
+		if err := rp.writeSession(r.Context(), h, s, sessionState{chunks: prev.chunks}); err != nil {
+			rp.logFailed(r, "session store", err)
 			internalError(w)
 			return
 		}
@@ -342,20 +362,20 @@ func (fe *Frontend) CallbackHandler() fox.HandlerFunc {
 
 var errInvalidLogin = errors.New("invalid login")
 
-func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*session, error) {
+func (rp *relyingParty) exchange(r *http.Request, code string, ls loginState) (*session, error) {
 	var key *dpopKey
-	if fe.cfg.dpop {
+	if rp.cfg.dpop {
 		var err error
 		if key, err = parseDPoPKey(ls.DPoPKey); err != nil {
 			return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
 		}
 	}
-	client := fe.providerClient(key)
+	client := rp.providerClient(key)
 	ctx := oidc.ClientContext(r.Context(), client)
-	token, err := fe.requestToken(ctx, client, url.Values{
+	token, err := rp.requestToken(ctx, client, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
-		"redirect_uri":  {fe.oauth2.RedirectURL},
+		"redirect_uri":  {rp.oauth2.RedirectURL},
 		"code_verifier": {ls.Verifier},
 	})
 	if err != nil {
@@ -368,7 +388,7 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	if !ok {
 		return nil, fmt.Errorf("%w: no id token", errInvalidLogin)
 	}
-	idToken, err := fe.verifyIDToken(ctx, rawIDToken)
+	idToken, err := rp.verifyIDToken(ctx, rawIDToken)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
 	}
@@ -385,7 +405,7 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 		return nil, fmt.Errorf("%w: %w", errInvalidLogin, err)
 	}
 
-	now := fe.now()
+	now := rp.now()
 	s := newSession(now)
 	s.Subject = idToken.Subject
 	s.SID = claims.SID
@@ -393,8 +413,8 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 	s.DPoPKey = ls.DPoPKey
 	s.setToken(token, now)
 
-	if fe.cfg.userInfo {
-		info, err := fe.provider.oidc.UserInfo(ctx, oauth2.StaticTokenSource(token))
+	if rp.cfg.userInfo {
+		info, err := rp.provider.oidc.UserInfo(ctx, oauth2.StaticTokenSource(token))
 		if err != nil {
 			return nil, err
 		}
@@ -411,8 +431,8 @@ func (fe *Frontend) exchange(r *http.Request, code string, ls loginState) (*sess
 
 // verifyIDToken verifies the ID token with go-oidc, then the claims that go-oidc does not check. OpenID Connect Core 2
 // requires sub and iat, and OpenID Connect Core 3.1.3.7 steps 3 and 4 define the checks of aud and azp.
-func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, error) {
-	idToken, err := fe.verifier.Verify(ctx, raw)
+func (rp *relyingParty) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToken, error) {
+	idToken, err := rp.verifier.Verify(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -428,7 +448,7 @@ func (fe *Frontend) verifyIDToken(ctx context.Context, raw string) (*oidc.IDToke
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, err
 	}
-	if err := fe.checkAudience(idToken.Audience, claims.AZP); err != nil {
+	if err := rp.checkAudience(idToken.Audience, claims.AZP); err != nil {
 		return nil, err
 	}
 	return idToken, nil
@@ -465,11 +485,11 @@ func (ls loginState) checkAuthentication(idToken *oidc.IDToken) error {
 
 // checkAudience checks the audiences and the authorized party of a token. Additional audiences are trusted only when
 // azp is the client ID.
-func (fe *Frontend) checkAudience(aud []string, azp string) error {
+func (rp *relyingParty) checkAudience(aud []string, azp string) error {
 	if len(aud) > 1 && azp == "" {
 		return errors.New("untrusted audience")
 	}
-	if azp != "" && azp != fe.oauth2.ClientID {
+	if azp != "" && azp != rp.oauth2.ClientID {
 		return errors.New("azp mismatch")
 	}
 	return nil
@@ -477,8 +497,8 @@ func (fe *Frontend) checkAudience(aud []string, azp string) error {
 
 // validPrompt reports whether prompt is a space-separated list of values supported by the provider, none being
 // exclusive of the others.
-func (fe *Frontend) validPrompt(prompt string) bool {
-	supported := fe.provider.promptValues
+func (rp *relyingParty) validPrompt(prompt string) bool {
+	supported := rp.provider.promptValues
 	if len(supported) == 0 {
 		supported = standardPrompts
 	}
@@ -496,16 +516,16 @@ func (fe *Frontend) validPrompt(prompt string) bool {
 
 // validACRValues reports whether acr is a non-empty, bounded list of values supported by the provider. Any value is
 // accepted when the provider does not advertise them.
-func (fe *Frontend) validACRValues(acr string) bool {
+func (rp *relyingParty) validACRValues(acr string) bool {
 	values := strings.Fields(acr)
 	if encoded, _ := json.Marshal(acr); len(values) == 0 || len(encoded)-2 > maxACRValues {
 		return false
 	}
-	if len(fe.provider.acrValues) == 0 {
+	if len(rp.provider.acrValues) == 0 {
 		return true
 	}
 	for _, v := range values {
-		if !slices.Contains(fe.provider.acrValues, v) {
+		if !slices.Contains(rp.provider.acrValues, v) {
 			return false
 		}
 	}
@@ -527,9 +547,9 @@ func localURL(u string) bool {
 }
 
 // trustedURL reports whether u is an absolute URL of a trusted origin.
-func (fe *Frontend) trustedURL(u string) bool {
+func (rp *relyingParty) trustedURL(u string) bool {
 	parsed, err := url.Parse(u)
-	return err == nil && parsed.User == nil && slices.Contains(fe.cfg.trustedOrigins, parsed.Scheme+"://"+parsed.Host)
+	return err == nil && parsed.User == nil && slices.Contains(rp.cfg.trustedOrigins, parsed.Scheme+"://"+parsed.Host)
 }
 
 func badRequest(w http.ResponseWriter) {

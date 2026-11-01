@@ -33,7 +33,7 @@ func (c countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestTokenRequestSingleAttempt(t *testing.T) {
 	e := newTestEnv(t, oidctest.Options{})
 	var n atomic.Int32
-	e.fe.provider.client = &http.Client{Transport: countingTransport{
+	e.fe.rp.provider.client = &http.Client{Transport: countingTransport{
 		base:  e.idp.Client().Transport,
 		paths: map[string]*atomic.Int32{"/token": &n},
 	}}
@@ -83,8 +83,8 @@ func TestRequestToken(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer srv.Close()
-			e.fe.oauth2.Endpoint.TokenURL = srv.URL
-			token, err := e.fe.requestToken(t.Context(), srv.Client(), url.Values{"grant_type": {"refresh_token"}})
+			e.fe.rp.oauth2.Endpoint.TokenURL = srv.URL
+			token, err := e.fe.rp.requestToken(t.Context(), srv.Client(), url.Values{"grant_type": {"refresh_token"}})
 			var expiry time.Time
 			if token != nil {
 				expiry = token.Expiry

@@ -152,6 +152,7 @@ func (s *session) mergeTokens(newer *session) {
 	maps.Copy(resources, newer.Resources)
 	s.Resources = resources
 	s.IDToken = newer.IDToken
+	s.UserInfo = newer.UserInfo
 	s.AccessToken = newer.AccessToken
 	s.TokenType = newer.TokenType
 	s.RefreshToken = newer.RefreshToken
@@ -201,13 +202,13 @@ type sessionState struct {
 
 // readSession returns the session of the request. It returns errNoSession when the request has no valid session, with
 // the state of the cookie so it can be deleted.
-func (fe *Frontend) readSession(ctx context.Context, cookies []*http.Cookie) (*session, sessionState, error) {
-	plaintext, chunks, err := sessionCookie.read(cookies, fe.aead)
+func (rp *relyingParty) readSession(ctx context.Context, cookies []*http.Cookie) (*session, sessionState, error) {
+	plaintext, chunks, err := rp.cookie.read(cookies, rp.aead)
 	st := sessionState{chunks: chunks}
 	if err != nil {
 		return nil, st, errNoSession
 	}
-	if fe.cfg.store == nil {
+	if rp.cfg.store == nil {
 		s, decodeErr := decodeSession(plaintext)
 		if decodeErr != nil {
 			return nil, st, errNoSession
@@ -216,14 +217,14 @@ func (fe *Frontend) readSession(ctx context.Context, cookies []*http.Cookie) (*s
 	}
 
 	id := storeID(plaintext)
-	r, err := fe.cfg.store.Load(ctx, id)
+	r, err := rp.cfg.store.Load(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, st, errNoSession
 	}
 	if err != nil {
 		return nil, st, err
 	}
-	data, err := fe.aead.Decrypt(r.Data, storeAssociatedData(id))
+	data, err := rp.aead.Decrypt(r.Data, storeAssociatedData(id))
 	if err != nil {
 		return nil, st, errNoSession
 	}
@@ -238,14 +239,14 @@ func (fe *Frontend) readSession(ctx context.Context, cookies []*http.Cookie) (*s
 // writeSession saves the session and adds the cookie to h when it changes. A stateful frontend creates a new session
 // key when the state has no id, so a login never reuses an existing session. It returns errNoSession when an existing
 // session no longer exists in the store.
-func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session, st sessionState) error {
-	s.prune(fe.cfg.resources, fe.now())
+func (rp *relyingParty) writeSession(ctx context.Context, h http.Header, s *session, st sessionState) error {
+	s.prune(rp.cfg.resources, rp.now())
 	data, err := json.Marshal(s) //nolint:gosec // the tokens are encrypted before leaving the process
 	if err != nil {
 		return err
 	}
-	if fe.cfg.store == nil {
-		return sessionCookie.write(h, fe.aead, data, 0, st.chunks)
+	if rp.cfg.store == nil {
+		return rp.cookie.write(h, rp.aead, data, 0, st.chunks)
 	}
 
 	var key []byte
@@ -253,13 +254,13 @@ func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session,
 		key = []byte(randomString())
 		st.id = storeID(key)
 	}
-	ciphertext, err := fe.aead.Encrypt(data, storeAssociatedData(st.id))
+	ciphertext, err := rp.aead.Encrypt(data, storeAssociatedData(st.id))
 	if err != nil {
 		return err
 	}
 	r := store.Record{
-		Expires:    s.expires(fe.cfg),
-		Partition:  fe.partition,
+		Expires:    s.expires(rp.cfg),
+		Partition:  rp.partition,
 		Subject:    s.Subject,
 		SID:        s.SID,
 		Data:       ciphertext,
@@ -267,7 +268,7 @@ func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session,
 	}
 	if key == nil {
 		// An existing session is never created again, since it may have been ended in the meantime.
-		err = fe.cfg.store.Update(ctx, st.id, r)
+		err = rp.cfg.store.Update(ctx, st.id, r)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			return errNoSession
@@ -277,30 +278,30 @@ func (fe *Frontend) writeSession(ctx context.Context, h http.Header, s *session,
 		}
 		return err
 	}
-	if err := fe.cfg.store.Create(ctx, st.id, r); err != nil {
+	if err := rp.cfg.store.Create(ctx, st.id, r); err != nil {
 		return err
 	}
-	return sessionCookie.write(h, fe.aead, key, 0, st.chunks)
+	return rp.cookie.write(h, rp.aead, key, 0, st.chunks)
 }
 
-func (fe *Frontend) deleteSession(ctx context.Context, h http.Header, st sessionState) error {
-	sessionCookie.clear(h, st.chunks)
-	if fe.cfg.store == nil || st.id == "" {
+func (rp *relyingParty) deleteSession(ctx context.Context, h http.Header, st sessionState) error {
+	rp.cookie.clear(h, st.chunks)
+	if rp.cfg.store == nil || st.id == "" {
 		return nil
 	}
-	return fe.cfg.store.Delete(ctx, st.id)
+	return rp.cfg.store.Delete(ctx, st.id)
 }
 
 // endSession deletes the session and revokes its refresh token. It holds the lock of the session, so it waits for a
 // token request in flight and revokes the latest refresh token, even when s comes from an older cookie. The request
 // that started it does not cancel it.
-func (fe *Frontend) endSession(ctx context.Context, h http.Header, s *session, st sessionState) error {
+func (rp *relyingParty) endSession(ctx context.Context, h http.Header, s *session, st sessionState) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
 	defer cancel()
-	return fe.tokens.Do(ctx, s.LogoutCSRFToken, func(latest *session) (*session, error) {
+	return rp.tokens.Do(ctx, s.LogoutCSRFToken, func(latest *session) (*session, error) {
 		if st.id != "" {
 			// Other replicas may have stored newer tokens.
-			stored, err := fe.loadSession(ctx, st.id)
+			stored, err := rp.loadSession(ctx, st.id)
 			switch {
 			case err == nil:
 				if latest == nil || stored.Generation > latest.Generation {
@@ -313,13 +314,13 @@ func (fe *Frontend) endSession(ctx context.Context, h http.Header, s *session, s
 		if latest != nil && latest.Generation > s.Generation {
 			s.mergeTokens(latest)
 		}
-		if err := fe.deleteSession(ctx, h, st); err != nil {
+		if err := rp.deleteSession(ctx, h, st); err != nil {
 			return nil, err
 		}
-		fe.tokens.Forget(s.LogoutCSRFToken)
+		rp.tokens.Forget(s.LogoutCSRFToken)
 		if s.RefreshToken != "" {
 			// The session is already deleted, so a failed revocation only leaves the refresh token valid until it expires.
-			_ = fe.revoke(ctx, s.RefreshToken)
+			_ = rp.revoke(ctx, s.RefreshToken)
 		}
 		return nil, nil
 	})
@@ -327,12 +328,12 @@ func (fe *Frontend) endSession(ctx context.Context, h http.Header, s *session, s
 
 // deleteSessionsBy deletes the stored sessions of the subject, restricted to the sid when it is not empty, and revokes
 // their refresh tokens.
-func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) error {
+func (rp *relyingParty) deleteSessionsBy(ctx context.Context, subject, sid string) error {
 	// The request cancels neither the deletion nor the revocations, which share one budget. The sessions deleted
 	// before an error are revoked too.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionTimeout)
 	defer cancel()
-	records, deleteErr := fe.cfg.store.DeleteBy(ctx, fe.partition, subject, sid)
+	records, deleteErr := rp.cfg.store.DeleteBy(ctx, rp.partition, subject, sid)
 
 	sem := make(chan struct{}, maxConcurrentRevocations)
 	var (
@@ -342,7 +343,7 @@ func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) e
 	)
 	skipped := 0
 	for id, r := range records {
-		data, err := fe.aead.Decrypt(r.Data, storeAssociatedData(id))
+		data, err := rp.aead.Decrypt(r.Data, storeAssociatedData(id))
 		if err != nil {
 			continue
 		}
@@ -372,12 +373,12 @@ func (fe *Frontend) deleteSessionsBy(ctx context.Context, subject, sid string) e
 			}()
 			tctx, cancel := context.WithTimeout(ctx, revocationTimeout)
 			defer cancel()
-			_ = fe.revokeWithin(tctx, s.RefreshToken)
+			_ = rp.revokeWithin(tctx, s.RefreshToken)
 		})
 	}
 	wg.Wait()
 	if skipped > 0 {
-		fe.logger.WarnContext(ctx, "refresh tokens not revoked", "count", skipped)
+		rp.logger.WarnContext(ctx, "refresh tokens not revoked", "count", skipped)
 	}
 	// The panic of a revocation is raised on the goroutine of the caller, where the server recovers it.
 	if panicked != nil {

@@ -64,6 +64,8 @@ type Options struct {
 	InvalidTargets []string
 	// AccessTokenTTL is the lifetime of the access tokens. The default is 5 minutes.
 	AccessTokenTTL time.Duration
+	// UserInfoStatus is the status of the UserInfo responses, when it is not zero.
+	UserInfoStatus int
 	// RotateRefreshTokens issues a new refresh token on every refresh. Reusing a refresh token then revokes every
 	// token issued from it.
 	RotateRefreshTokens bool
@@ -517,6 +519,10 @@ func (s *Server) userInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok || !found {
 		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if s.opts.UserInfoStatus != 0 {
+		w.WriteHeader(s.opts.UserInfoStatus)
 		return
 	}
 	info := map[string]any{"sub": g.subject}

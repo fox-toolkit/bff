@@ -60,7 +60,7 @@ func TestEndToEnd(t *testing.T) {
 
 			p, err := NewProvider(t.Context(), idp.URL, WithHTTPClient(idp.Client()))
 			require.NoError(t, err)
-			var opts []Option
+			var opts []FrontendOption
 			if stateful {
 				opts = append(opts, WithStore(memory.NewStore()))
 			}
@@ -146,9 +146,9 @@ func TestEndToEnd(t *testing.T) {
 			require.Equal(t, http.StatusOK, code)
 			appURL, err := url.Parse(app.URL)
 			require.NoError(t, err)
-			before, _, err := fe.readSession(t.Context(), jar.Cookies(appURL))
+			before, _, err := fe.rp.readSession(t.Context(), jar.Cookies(appURL))
 			require.NoError(t, err)
-			fe.now = func() time.Time { return time.Now().Add(20 * time.Second) }
+			fe.rp.now = func() time.Time { return time.Now().Add(20 * time.Second) }
 
 			for range 3 {
 				require.Equal(t, http.StatusOK, get("/api/orders").StatusCode)

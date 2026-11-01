@@ -7,6 +7,7 @@ package bff
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -35,9 +36,10 @@ var (
 )
 
 type refreshResult struct {
-	at      time.Time
-	token   *oauth2.Token
-	idToken string
+	at       time.Time
+	token    *oauth2.Token
+	idToken  string
+	userInfo json.RawMessage
 }
 
 // tokenGroup runs the token requests of a session one at a time in this process, so a provider that rotates refresh
@@ -190,14 +192,14 @@ func (g *tokenGroup) release(key [sha256.Size]byte, t *sessionTokens) {
 }
 
 // updateTokens runs update with the lock of the session. It reports whether s changed.
-func (fe *Frontend) updateTokens(ctx context.Context, s *session, st sessionState, resource string, tr *tokenRequest, update func() (bool, error)) (bool, error) {
+func (rp *relyingParty) updateTokens(ctx context.Context, s *session, st sessionState, resource string, tr *tokenRequest, update func() (bool, error)) (bool, error) {
 	changed := false
-	err := fe.tokens.Request(ctx, s.LogoutCSRFToken, resource, func(latest *session, shared error) (*session, error) {
+	err := rp.tokens.Request(ctx, s.LogoutCSRFToken, resource, func(latest *session, shared error) (*session, error) {
 		tr.start(ctx)
 		if st.id != "" {
 			// Other replicas may have changed the stored session. The tokens kept in memory may be newer, as the
 			// session is stored after the lock is released.
-			stored, err := fe.loadSession(ctx, st.id)
+			stored, err := rp.loadSession(ctx, st.id)
 			if err != nil {
 				return nil, err
 			}
@@ -244,15 +246,15 @@ func (tr *tokenRequest) stop() {
 }
 
 // loadSession returns the stored session of the id. It returns errSessionEnded when the session no longer exists.
-func (fe *Frontend) loadSession(ctx context.Context, id string) (*session, error) {
-	r, err := fe.cfg.store.Load(ctx, id)
+func (rp *relyingParty) loadSession(ctx context.Context, id string) (*session, error) {
+	r, err := rp.cfg.store.Load(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, errSessionEnded
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errStore, err)
 	}
-	data, err := fe.aead.Decrypt(r.Data, storeAssociatedData(id))
+	data, err := rp.aead.Decrypt(r.Data, storeAssociatedData(id))
 	if err != nil {
 		return nil, errSessionEnded
 	}
@@ -265,12 +267,12 @@ func (fe *Frontend) loadSession(ctx context.Context, id string) (*session, error
 
 // refresh renews the access token of s when it is stale. It reports whether s changed. It returns errSessionEnded when
 // the provider rejects the refresh token.
-func (fe *Frontend) refresh(ctx context.Context, s *session, st sessionState, tr *tokenRequest) (bool, error) {
-	return fe.updateTokens(ctx, s, st, "", tr, func() (bool, error) {
-		if !s.stale(fe.now()) {
+func (rp *relyingParty) refresh(ctx context.Context, s *session, st sessionState, tr *tokenRequest) (bool, error) {
+	return rp.updateTokens(ctx, s, st, "", tr, func() (bool, error) {
+		if !s.stale(rp.now()) {
 			return false, nil
 		}
-		res, err := fe.redeem(tr.ctx, s, "")
+		res, err := rp.redeem(tr.ctx, s, "")
 		if err != nil {
 			return keepRefreshToken(s, res, err)
 		}
@@ -278,21 +280,24 @@ func (fe *Frontend) refresh(ctx context.Context, s *session, st sessionState, tr
 		if res.idToken != "" {
 			s.IDToken = res.idToken
 		}
+		if res.userInfo != nil {
+			s.UserInfo = res.userInfo
+		}
 		return true, nil
 	})
 }
 
 // refreshResource requests the access token of the resource when s has none or when it is stale. It reports whether s
 // changed. It returns errSessionEnded when the provider rejects the refresh token.
-func (fe *Frontend) refreshResource(ctx context.Context, s *session, st sessionState, resource string, tr *tokenRequest) (bool, error) {
+func (rp *relyingParty) refreshResource(ctx context.Context, s *session, st sessionState, resource string, tr *tokenRequest) (bool, error) {
 	if s.RefreshToken == "" {
 		return false, errNoRefreshToken
 	}
-	return fe.updateTokens(ctx, s, st, resource, tr, func() (bool, error) {
-		if t, ok := s.Resources[resource]; ok && !t.stale(fe.now()) {
+	return rp.updateTokens(ctx, s, st, resource, tr, func() (bool, error) {
+		if t, ok := s.Resources[resource]; ok && !t.stale(rp.now()) {
 			return false, nil
 		}
-		res, err := fe.redeem(tr.ctx, s, resource)
+		res, err := rp.redeem(tr.ctx, s, resource)
 		if err != nil {
 			return keepRefreshToken(s, res, err)
 		}
@@ -316,7 +321,7 @@ func keepRefreshToken(s *session, res refreshResult, err error) (bool, error) {
 
 // redeem sends the refresh token of s to the provider, for an access token of the resource when it is not empty. With
 // errNotDPoPBound, it also returns the rejected token.
-func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (refreshResult, error) {
+func (rp *relyingParty) redeem(ctx context.Context, s *session, resource string) (refreshResult, error) {
 	var key *dpopKey
 	if s.DPoPKey != nil {
 		var err error
@@ -324,14 +329,14 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 			return refreshResult{}, err
 		}
 	}
-	client := fe.providerClient(key)
+	client := rp.providerClient(key)
 	ctx = oidc.ClientContext(ctx, client)
 
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {s.RefreshToken}}
 	if resource != "" {
 		form.Set("resource", resource)
 	}
-	token, err := fe.requestToken(ctx, client, form)
+	token, err := rp.requestToken(ctx, client, form)
 	if err != nil {
 		if te, ok := errors.AsType[*tokenError](err); ok && te.Code == "invalid_grant" {
 			return refreshResult{}, errSessionEnded
@@ -339,12 +344,12 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 		return refreshResult{}, err
 	}
 	if key != nil && !isDPoP(token.TokenType) {
-		return refreshResult{token: token, at: fe.now()}, errNotDPoPBound
+		return refreshResult{token: token, at: rp.now()}, errNotDPoPBound
 	}
 
 	rawIDToken, _ := token.Extra("id_token").(string)
 	if rawIDToken != "" {
-		idToken, err := fe.verifyIDToken(ctx, rawIDToken)
+		idToken, err := rp.verifyIDToken(ctx, rawIDToken)
 		// OpenID Connect Core 12.2 requires the same subject. Other claims vary between providers and are not compared.
 		if err == nil && idToken.Subject != s.Subject {
 			err = errors.New("sub changed")
@@ -354,5 +359,21 @@ func (fe *Frontend) redeem(ctx context.Context, s *session, resource string) (re
 			return refreshResult{}, fmt.Errorf("%w: refreshed id token: %w", errSessionEnded, err)
 		}
 	}
-	return refreshResult{token: token, idToken: rawIDToken, at: fe.now()}, nil
+	res := refreshResult{token: token, idToken: rawIDToken, at: rp.now()}
+	if resource == "" && rp.cfg.userInfo {
+		info, err := rp.provider.oidc.UserInfo(ctx, oauth2.StaticTokenSource(token))
+		switch {
+		case err != nil:
+			// The claims of the previous UserInfo response are kept.
+			rp.logger.WarnContext(ctx, "userinfo request failed", "error", err)
+		case info.Subject != s.Subject:
+			// OpenID Connect Core 5.3.2 requires the sub of the UserInfo response to match the ID token.
+			return refreshResult{}, fmt.Errorf("%w: refreshed userinfo: sub changed", errSessionEnded)
+		default:
+			if err := info.Claims(&res.userInfo); err != nil {
+				rp.logger.WarnContext(ctx, "userinfo request failed", "error", err)
+			}
+		}
+	}
+	return res, nil
 }
