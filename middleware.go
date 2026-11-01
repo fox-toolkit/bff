@@ -31,15 +31,14 @@ type (
 )
 
 // AllowAnonymous returns a [fox.RouteOption] that lets [Frontend.Authenticate] pass the requests without a session to
-// the next handler. For these requests, [AccessToken] and [ResourceAccessToken] report false, and [Transport] and
+// the next handler. For these requests, [AccessToken] and [ResourceAccessToken] return false, and [Transport] and
 // [ResourceTransport] do not add an access token.
 func AllowAnonymous() fox.RouteOption {
 	return fox.WithAnnotation(anonymousKey{}, true)
 }
 
 // ForResource returns a [fox.RouteOption] that lets [Frontend.Authenticate] obtain the access tokens of the resources
-// for the next handler, as defined by RFC 8707. The resources must be declared with [WithResources]. When a route has
-// several ForResource options, the last one applies.
+// for the next handler, as defined by RFC 8707. The resources must be declared with [WithResources].
 func ForResource(resources ...string) fox.RouteOption {
 	return fox.WithAnnotation(resourcesKey{}, slices.Clone(resources))
 }

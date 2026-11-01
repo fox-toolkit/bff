@@ -18,7 +18,7 @@ import (
 
 var errRouteResource = errors.New("resource not declared on the route")
 
-// AccessToken returns the access token of a request authenticated by [Frontend.Authenticate]. It reports false for an
+// AccessToken returns the access token of a request authenticated by [Frontend.Authenticate]. It returns false for an
 // anonymous request and for a request not handled by the middleware. A DPoP-bound access token must be sent with
 // [Transport].
 func AccessToken(ctx context.Context) (*oauth2.Token, bool) {
@@ -34,7 +34,7 @@ func AccessToken(ctx context.Context) (*oauth2.Token, bool) {
 }
 
 // ResourceAccessToken returns the access token of the resource for a request authenticated by [Frontend.Authenticate],
-// as defined by RFC 8707. It reports false for an anonymous request, for a request not handled by the middleware and
+// as defined by RFC 8707. It returns false for an anonymous request, for a request not handled by the middleware and
 // for a resource that the route does not declare with [ForResource]. A DPoP-bound access token must be sent with
 // [ResourceTransport].
 func ResourceAccessToken(ctx context.Context, resource string) (*oauth2.Token, bool) {
@@ -145,7 +145,7 @@ func (rs *requestState) resourceToken(resource string) (resourceToken, bool) {
 }
 
 // UserClaims returns the claims about the user of a request authenticated by [Frontend.Authenticate], as returned by
-// [Frontend.UserHandler]. It reports false for an anonymous request and for a request not handled by the middleware.
+// [Frontend.UserHandler]. It returns false for an anonymous request and for a request not handled by the middleware.
 func UserClaims(ctx context.Context) (map[string]any, bool) {
 	rs, ok := ctx.Value(sessionKey{}).(*requestState)
 	if !ok {
